@@ -1,5 +1,5 @@
 dataset_name: 'retina_GA'
-target_dim: (256, 256)
+target_dim: (512, 512)
 dataset_path: '$ROOT/data/retina_GA/'
 model_save_path: '$ROOT/checkpoints/retina_GA_seed1.pty'
 output_save_path: '$ROOT/results/retina_GA_seed1/'

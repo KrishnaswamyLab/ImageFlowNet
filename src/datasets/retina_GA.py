@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 class RetinaGA(Dataset):
 
     def __init__(self,
-                 target_dim: Tuple[int] = (256, 256),
+                 target_dim: Tuple[int] = (512, 512),
                  base_path: str = '../../data/retina_GA',
                  image_folder: str = 'images/',
                  sample_pairs: bool = True,

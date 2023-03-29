@@ -26,3 +26,7 @@ python -m pip install -U roifile[all]
 Installation usually takes between 20 minutes and 1 hour on a normal desktop computer.
 
 ## Usage
+
+
+## Acknowledgements
+ODE modules adapated from https://github.com/EmilienDupont/augmented-neural-odes and https://github.com/DIAGNijmegen/neural-odes-segmentation.

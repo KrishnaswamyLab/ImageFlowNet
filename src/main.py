@@ -12,6 +12,7 @@ from utils.log_util import log
 # from utils.output_saver import OutputSaver
 from utils.parse import parse_settings
 from utils.seed import seed_everything
+from model.ode_models import ConvODEUNet
 # from model import CUTSEncoder
 
 
@@ -20,15 +21,20 @@ def train(config: AttributeHashmap):
     train_set, val_set, test_set, num_image_channel = \
         prepare_dataset(config=config, mode='train')
 
+    # Build the model
+
+    num_filters=16, output_dim=2, time_dependent=True,
+                      non_linearity='lrelu', adjoint=True, tol=1e-3)
+    model = ConvODEUNet(
+        in_channels=num_image_channel,
+        out_channels=num_image_channel,
+        num_filters=config.num_kernels,
+        random_seed=config.random_seed,
+        sampled_patches_per_image=config.sampled_patches_per_image).to(device)
+
     for aaa in train_set:
         import pdb
         pdb.set_trace()
-    # # Build the model
-    # model = CUTSEncoder(
-    #     in_channels=num_image_channel,
-    #     num_kernels=config.num_kernels,
-    #     random_seed=config.random_seed,
-    #     sampled_patches_per_image=config.sampled_patches_per_image).to(device)
     # optimizer = torch.optim.AdamW(model.parameters(),
     #                               lr=config.learning_rate,
     #                               weight_decay=config.weight_decay)
