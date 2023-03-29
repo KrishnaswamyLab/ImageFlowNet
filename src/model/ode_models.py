@@ -4,9 +4,11 @@ from torchdiffeq import odeint, odeint_adjoint
 
 class ConvODEUNet(nn.Module):
     def __init__(self,
+                 device: torch.device = torch.device('cpu'),
                  num_filters: int = 16,
                  in_channels: int = 3,
                  out_channels: int = 3,
+                 augment_dim: int = 0,
                  time_dependent: bool = False,
                  non_linearity: str ='relu',
                  tol: float = 1e-3,
@@ -17,11 +19,13 @@ class ConvODEUNet(nn.Module):
 
         Parameters
         ----------
-        device : torch.device
-        img_size : tuple of ints
-            Tuple of (channels, height, width).
-        num_kernels : int
+        device: torch.device
+        num_filters : int
             Number of convolutional filters.
+        in_channels: int
+            Number of input image channels.
+        out_channels: int
+            Number of output image channels.
         augment_dim: int
             Number of augmentation channels to add. If 0 does not augment ODE.
         time_dependent : bool
@@ -36,7 +40,8 @@ class ConvODEUNet(nn.Module):
         '''
         super(ConvODEUNet, self).__init__()
 
-        self.conv1x1 = nn.Conv2d(3, num_filters, 1, 1)
+        self.device = device
+        self.conv1x1 = nn.Conv2d(in_channels, num_filters, 1, 1)
 
         ode_down1 = ConvODEFunc(num_filters, time_dependent, non_linearity)
         self.odeblock_down1 = ODEBlock(ode_down1, tol=tol, adjoint=adjoint)
@@ -121,9 +126,9 @@ class ConvODEUNet(nn.Module):
         pred = self.classifier(x)
         return pred
 
-# ============================================================================================= #
-# Below this line are modules taken from https://github.com/EmilienDupont/augmented-neural-odes #
-# ============================================================================================= #
+# =============================================================================================== #
+# Below this line are modules adapted from https://github.com/EmilienDupont/augmented-neural-odes #
+# =============================================================================================== #
 
 class ODEFunc(nn.Module):
     """MLP modeling the derivative of ODE system.
@@ -301,8 +306,8 @@ class ConvODEFunc(nn.Module):
     Parameters
     ----------
     device : torch.device
-    img_size : tuple of ints
-        Tuple of (channels, height, width).
+    in_channels: int
+        Number of image channels.
     num_filters : int
         Number of convolutional filters.
     augment_dim: int
@@ -312,31 +317,30 @@ class ConvODEFunc(nn.Module):
     non_linearity : string
         One of 'relu' and 'softplus'
     """
-    def __init__(self, device, img_size, num_filters, augment_dim=0,
+    def __init__(self, device, in_channels, num_filters, augment_dim=0,
                  time_dependent=False, non_linearity='relu'):
         super(ConvODEFunc, self).__init__()
         self.device = device
         self.augment_dim = augment_dim
-        self.img_size = img_size
         self.time_dependent = time_dependent
         self.num_filterse = 0  # Number of function evaluations
-        self.channels, self.height, self.width = img_size
-        self.channels += augment_dim
+        self.in_channels = in_channels
+        self.in_channels += augment_dim
         self.num_filters = num_filters
 
         if time_dependent:
-            self.conv1 = Conv2dTime(self.channels, self.num_filters,
+            self.conv1 = Conv2dTime(self.in_channels, self.num_filters,
                                     kernel_size=1, stride=1, padding=0)
             self.conv2 = Conv2dTime(self.num_filters, self.num_filters,
                                     kernel_size=3, stride=1, padding=1)
-            self.conv3 = Conv2dTime(self.num_filters, self.channels,
+            self.conv3 = Conv2dTime(self.num_filters, self.in_channels,
                                     kernel_size=1, stride=1, padding=0)
         else:
-            self.conv1 = nn.Conv2d(self.channels, self.num_filters,
+            self.conv1 = nn.Conv2d(self.in_channels, self.num_filters,
                                    kernel_size=1, stride=1, padding=0)
             self.conv2 = nn.Conv2d(self.num_filters, self.num_filters,
                                    kernel_size=3, stride=1, padding=1)
-            self.conv3 = nn.Conv2d(self.num_filters, self.channels,
+            self.conv3 = nn.Conv2d(self.num_filters, self.in_channels,
                                    kernel_size=1, stride=1, padding=0)
 
         if non_linearity == 'relu':
