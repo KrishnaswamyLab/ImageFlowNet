@@ -1,0 +1,15 @@
+dataset_name: 'retina_GA'
+target_dim: (256, 256)
+dataset_path: '$ROOT/data/retina_GA/'
+model_save_path: '$ROOT/checkpoints/retina_GA_seed1.pty'
+output_save_path: '$ROOT/results/retina_GA_seed1/'
+log_folder: '$ROOT/logs'
+learning_rate: 1e-3
+max_epochs: 200
+patience: 10
+batch_size: 16
+num_kernels: 16
+num_workers: 0
+random_seed: 1
+train_val_test_ratio: '6:2:2'
+train_identity: False

@@ -16,15 +16,12 @@ We developed the codebase in a miniconda environment.
 Tested on Python 3.9.13 + PyTorch 1.12.1.
 How we created the conda environment:
 ```
-conda create --name cuts pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
-conda activate cuts
+conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
+conda activate mip
 conda install scikit-image pillow matplotlib seaborn tqdm -c anaconda
 python -m pip install -U phate
-python -m pip install git+https://github.com/KrishnaswamyLab/CATCH
-python -m pip install opencv-python
-python -m pip install sewar
-python -m pip install monai
-python -m pip install nibabel
+python -m pip install torchdiffeq
+python -m pip install -U roifile[all]
 ```
 Installation usually takes between 20 minutes and 1 hour on a normal desktop computer.
 
