@@ -3,7 +3,8 @@
 [![Twitter](https://img.shields.io/twitter/follow/KrishnaswamyLab.svg?style=social&label=Follow)](https://twitter.com/KrishnaswamyLab)
 [![Github Stars](https://img.shields.io/github/stars/ChenLiu-1996/MedicalImageProgression.svg?style=social&label=Stars)](https://github.com/ChenLiu-1996/MedicalImageProgression/)
 
-
+## Goal
+We want to predict the progression of diseases by interpolating or extrapolating the medical images at different time points.
 
 ## Repository Hierarchy
 ```
