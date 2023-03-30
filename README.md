@@ -19,10 +19,14 @@ How we created the conda environment:
 ```
 conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
 conda activate mip
+conda install -c conda-forge torchdiffeq
+python3 -m pip install pyyaml
+conda install -c menpo opencv
+pip install --upgrade pip
+pip install opencv-contrib-python
+conda install tqdm
 conda install scikit-image pillow matplotlib seaborn tqdm -c anaconda
-python -m pip install -U phate
-python -m pip install torchdiffeq
-python -m pip install -U roifile[all]
+pip install -U roifile[all]
 ```
 Installation usually takes between 20 minutes and 1 hour on a normal desktop computer.
 

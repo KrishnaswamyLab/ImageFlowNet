@@ -1,6 +1,6 @@
 from data_utils.extend import ExtendedDataset
-from data_utils.split import split_dataset
-from datasets.retina_GA import RetinaGA
+from data_utils.split import split_indices
+from datasets.retina_GA import RetinaGA, RetinaGASubset
 from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
 
@@ -9,11 +9,9 @@ def prepare_dataset(config: AttributeHashmap, mode: str = 'train'):
     # Read dataset.
     if config.dataset_name == 'retina_GA':
         dataset = RetinaGA(base_path=config.dataset_path,
-                           target_dim=config.target_dim,
-                           sample_pairs=False,
-                           train_identity=config.train_identity)
+                           target_dim=config.target_dim)
     else:
-        raise Exception(
+        raise ValueError(
             'Dataset not found. Check `dataset_name` in config yaml file.')
 
     num_image_channel = dataset.num_image_channel()
@@ -22,9 +20,19 @@ def prepare_dataset(config: AttributeHashmap, mode: str = 'train'):
     if mode == 'train':
         ratios = [float(c) for c in config.train_val_test_ratio.split(':')]
         ratios = tuple([c / sum(ratios) for c in ratios])
-        train_set, val_set, test_set = split_dataset(dataset=dataset,
-                                                     splits=ratios,
-                                                     random_seed=config.random_seed)
+        indices = list(range(len(dataset)))
+        train_indices, val_indices, test_indices = split_indices(
+            indices=indices, splits=ratios, random_seed=config.random_seed)
+
+        train_set = RetinaGASubset(retina_GA_dataset=dataset,
+                                   subset_indices=train_indices,
+                                   sample_pairs=True)
+        val_set = RetinaGASubset(retina_GA_dataset=dataset,
+                                 subset_indices=val_indices,
+                                 sample_pairs=False)
+        test_set = RetinaGASubset(retina_GA_dataset=dataset,
+                                  subset_indices=test_indices,
+                                  sample_pairs=False)
 
         min_batch_per_epoch = 5
         desired_len = max(len(train_set),
@@ -36,11 +44,11 @@ def prepare_dataset(config: AttributeHashmap, mode: str = 'train'):
                                shuffle=True,
                                num_workers=config.num_workers)
         val_set = DataLoader(dataset=val_set,
-                             batch_size=config.batch_size,
+                             batch_size=1,
                              shuffle=False,
                              num_workers=config.num_workers)
         test_set = DataLoader(dataset=test_set,
-                              batch_size=config.batch_size,
+                              batch_size=1,
                               shuffle=False,
                               num_workers=config.num_workers)
         return train_set, val_set, test_set, num_image_channel
