@@ -8,7 +8,13 @@ learning_rate: 1e-3
 max_epochs: 200
 patience: 10
 batch_size: 16
-num_kernels: 16
+num_filters: 16
+sample_pairs: True        # Equal prob. for each patient during training.
+ode_augment_dim: 1        # Augmented Neural ODE: additional dimension.
+ode_tol: 1e-3             # Neural ODE: tolerance.
+ode_adjoint: False        # Neural ODE: Whether to use the adjoint method.
+ode_time_dependent: True  # Neural ODE: Whether it is time-dependent.
+ode_steps: 1000           # Neural ODE: steps.
 num_workers: 0
 random_seed: 1
 train_val_test_ratio: '6:2:2'

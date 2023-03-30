@@ -3,7 +3,7 @@ from torch import nn
 from torchdiffeq import odeint, odeint_adjoint
 
 
-class ConvODEUNet(nn.Module):
+class ConvODEResUNet(nn.Module):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -17,7 +17,7 @@ class ConvODEUNet(nn.Module):
                  adjoint=False,
                  max_num_steps: int = 1000):
         '''
-        A U-Net model built with ConvODE blocks, modeling the derivative of ODE system.
+        A Residual U-Net model with the bottleneck layer built using a ConvODEBlock.
         Partially inspired by https://github.com/DIAGNijmegen/neural-odes-segmentation
 
         Parameters
@@ -43,7 +43,7 @@ class ConvODEUNet(nn.Module):
         max_num_steps: int
             Max number of steps in ODE solver.
         '''
-        super(ConvODEUNet, self).__init__()
+        super(ConvODEResUNet, self).__init__()
 
         self.device = device
         self.in_channels = in_channels
@@ -52,9 +52,10 @@ class ConvODEUNet(nn.Module):
         self.tol = tol
         self.adjoint = adjoint
         self.max_num_steps = max_num_steps
-        if non_linearity == 'relu':
+        self.non_linearity_str = non_linearity
+        if self.non_linearity_str == 'relu':
             self.non_linearity = nn.ReLU(inplace=True)
-        elif non_linearity == 'softplus':
+        elif self.non_linearity_str == 'softplus':
             self.non_linearity = nn.Softplus()
 
         n_f = num_filters  # shorthand
@@ -65,13 +66,14 @@ class ConvODEUNet(nn.Module):
         self.conv_down3_4 = ResConvBlock(n_f * 4, n_f * 8)
         self.conv_down4_embed = ResConvBlock(n_f * 8, n_f * 16)
 
-        self.odeblock_embedding = self._make_ode_block(prev_channels=n_f * 8,
+        self.odeblock_embedding = self._make_ode_block(prev_channels=n_f * 16,
                                                        curr_channels=n_f * 16)
 
-        self.conv_up_embed_1 = ResUpConvBlock(n_f * 16 + n_f * 8, n_f * 8)
-        self.conv_up1_2 = ResUpConvBlock(n_f * 8 + n_f * 4, n_f * 4)
-        self.conv_up2_3 = ResUpConvBlock(n_f * 4 + n_f * 2, n_f * 2)
-        self.conv_up3_4 = ResUpConvBlock(n_f * 2 + n_f, n_f)
+        self.conv_up_embed_1 = ResUpConvBlock(n_f * 16 * 2 + self.augment_dim,
+                                              n_f * 8)
+        self.conv_up1_2 = ResUpConvBlock(n_f * 8 * 2, n_f * 4)
+        self.conv_up2_3 = ResUpConvBlock(n_f * 4 * 2, n_f * 2)
+        self.conv_up3_4 = ResUpConvBlock(n_f * 2 * 2, n_f)
         self.out_layer = ResUpConvBlock(n_f, out_channels)
 
     def _make_ode_block(self, prev_channels: int, curr_channels: int):
@@ -80,7 +82,7 @@ class ConvODEUNet(nn.Module):
                                num_filters=curr_channels,
                                augment_dim=self.augment_dim,
                                time_dependent=self.time_dependent,
-                               non_linearity=self.non_linearity)
+                               non_linearity=self.non_linearity_str)
         return ODEBlock(device=self.device,
                         odefunc=ode_func,
                         is_conv=True,

@@ -7,10 +7,12 @@ from utils.log_util import log
 
 def parse_settings(config: AttributeHashmap, log_settings: bool = True):
     # fix typing issues
-    for key in ['learning_rate']:
-        config[key] = float(config[key])
+    for key in ['learning_rate', 'ode_tol']:
+        if key in config.keys():
+            config[key] = float(config[key])
     for key in ['target_dim']:
-        config[key] = ast.literal_eval(config[key])
+        if key in config.keys():
+            config[key] = ast.literal_eval(config[key])
 
     # fix path issues
     ROOT = '/'.join(

@@ -64,46 +64,63 @@ class RetinaGASubset(RetinaGA):
                  sample_pairs: bool = False):
         '''
         A subset of RetinaGA Dataset.
+
+        In RetinaGA Dataset, we carefully isolated the (variable number of) images from
+        different patients, and in train/val/test split we split the data by
+        patient rather than by image.
+
+        Now we have 3 instances of RetinaGASubset, one for each train/val/test set.
+        In each set, we can safely unpack the images out.
+        We want to organize the images such that each time `__getitem__` is called,
+        it gets a pair of [x_start, x_end] and [t_start, t_end].
         '''
         super(RetinaGASubset, self).__init__()
 
         self.target_dim = retina_GA_dataset.target_dim
+        self.sample_pairs = sample_pairs
+
         self.image_by_patient = [
             retina_GA_dataset.image_by_patient[i] for i in subset_indices
         ]
-        self.sample_pairs = sample_pairs
+
+        self.all_image_pairs = []
+        for image_list in self.image_by_patient:
+            pair_indices = list(
+                itertools.combinations(np.arange(len(image_list)), r=2))
+            for (idx1, idx2) in pair_indices:
+                self.all_image_pairs.append(
+                    [image_list[idx1], image_list[idx2]])
 
     def __len__(self) -> int:
-        return len(self.image_by_patient)
+        if self.sample_pairs:
+            # If we only sample 1 pair of images per patient...
+            return len(self.image_by_patient)
+        else:
+            # If we unpack all the images...
+            return len(self.all_image_pairs)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
-        image_paths_of_patient = self.image_by_patient[idx]
-
         if self.sample_pairs is True:
-            sampled_pairs = np.random.choice(image_paths_of_patient,
-                                             size=2,
-                                             replace=False)
+            image_list = self.image_by_patient[idx]
+            pair_indices = list(
+                itertools.combinations(np.arange(len(image_list)), r=2))
+            sampled_pair = [
+                image_list[i]
+                for i in pair_indices[np.random.choice(len(pair_indices))]
+            ]
             images = np.array([
-                load_image(p, target_dim=self.target_dim)
-                for p in sampled_pairs
+                load_image(p, target_dim=self.target_dim) for p in sampled_pair
             ])
-            timestamps = np.array([get_time(p) for p in sampled_pairs])
-            pair_indices = np.array([0, 1])
+            timestamps = np.array([get_time(p) for p in sampled_pair])
 
         else:
+            queried_pair = self.all_image_pairs[idx]
             images = np.array([
-                load_image(p, target_dim=self.target_dim)
-                for p in image_paths_of_patient
+                load_image(p, target_dim=self.target_dim) for p in queried_pair
             ])
-            timestamps = np.array(
-                [get_time(p) for p in image_paths_of_patient])
-            pair_indices = np.array(
-                list(
-                    itertools.combinations(np.arange(
-                        len(image_paths_of_patient)),
-                                           r=2)))
+            timestamps = np.array([get_time(p) for p in queried_pair])
 
-        return images, timestamps, pair_indices
+        return images, timestamps
 
 
 def load_image(path: str, target_dim: Tuple[int] = (256, 256)) -> np.array:
