@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch import nn
 from torchdiffeq import odeint, odeint_adjoint
@@ -160,6 +162,131 @@ class ConvODEResUNet(nn.Module):
         output = self.out_layer(x)
 
         return output
+
+    def save_weights(self, model_save_path: str) -> None:
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        torch.save(self.state_dict(), model_save_path)
+        return
+
+    def load_weights(self, model_save_path: str, device: torch.device) -> None:
+        self.load_state_dict(torch.load(model_save_path, map_location=device))
+        return
+
+
+class ResUNet(nn.Module):
+
+    def __init__(self,
+                 device: torch.device = torch.device('cpu'),
+                 num_filters: int = 16,
+                 in_channels: int = 3,
+                 out_channels: int = 3):
+        '''
+        A Residual U-Net model.
+
+        Parameters
+        ----------
+        device: torch.device
+        num_filters : int
+            Number of convolutional filters.
+        in_channels: int
+            Number of input image channels.
+        out_channels: int
+            Number of output image channels.
+        '''
+        super(ResUNet, self).__init__()
+
+        self.device = device
+        self.in_channels = in_channels
+        if self.non_linearity_str == 'relu':
+            self.non_linearity = nn.ReLU(inplace=True)
+        elif self.non_linearity_str == 'softplus':
+            self.non_linearity = nn.Softplus()
+
+        n_f = num_filters  # shorthand
+
+        self.conv1x1 = ResConvBlock(in_channels, n_f)
+        self.conv_down1_2 = ResConvBlock(n_f, n_f * 2)
+        self.conv_down2_3 = ResConvBlock(n_f * 2, n_f * 4)
+        self.conv_down3_4 = ResConvBlock(n_f * 4, n_f * 8)
+        self.conv_down4_embed = ResConvBlock(n_f * 8, n_f * 16)
+
+        self.conv_up_embed_1 = ResUpConvBlock(n_f * 16 * 2, n_f * 8)
+        self.conv_up1_2 = ResUpConvBlock(n_f * 8 * 2, n_f * 4)
+        self.conv_up2_3 = ResUpConvBlock(n_f * 4 * 2, n_f * 2)
+        self.conv_up3_4 = ResUpConvBlock(n_f * 2 * 2, n_f)
+        self.out_layer = ResUpConvBlock(n_f, out_channels)
+
+    def forward(self, x: torch.Tensor):
+        '''
+        `interpolate` is used as a drop-in replacement for MaxPool2d.
+        '''
+        x = self.non_linearity(self.conv1x1(x))
+
+        x_scale1 = self.non_linearity(self.conv_down1_2(x))
+        x = nn.functional.interpolate(x_scale1,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x_scale2 = self.non_linearity(self.conv_down2_3(x))
+        x = nn.functional.interpolate(x_scale2,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x_scale3 = self.non_linearity(self.conv_down3_4(x))
+        x = nn.functional.interpolate(x_scale3,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x_scale4 = self.non_linearity(self.conv_down4_embed(x))
+        x = nn.functional.interpolate(x_scale4,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = torch.cat((x, x_scale4), dim=1)
+        x = self.non_linearity(self.conv_up_embed_1(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = torch.cat((x, x_scale3), dim=1)
+        x = self.non_linearity(self.conv_up1_2(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = torch.cat((x, x_scale2), dim=1)
+        x = self.non_linearity(self.conv_up2_3(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = torch.cat((x, x_scale1), dim=1)
+        x = self.non_linearity(self.conv_up3_4(x))
+
+        output = self.out_layer(x)
+
+        return output
+
+    def save_weights(self, model_save_path: str) -> None:
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        torch.save(self.state_dict(), model_save_path)
+        return
+
+    def load_weights(self, model_save_path: str, device: torch.device) -> None:
+        self.load_state_dict(torch.load(model_save_path, map_location=device))
+        return
 
 
 class ResConvBlock(nn.Module):

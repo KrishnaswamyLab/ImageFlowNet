@@ -128,8 +128,7 @@ def load_image(path: str, target_dim: Tuple[int] = (256, 256)) -> np.array:
     image = np.array(
         cv2.resize(
             cv2.cvtColor(cv2.imread(path, cv2.IMREAD_COLOR),
-                         code=cv2.COLOR_BGR2RGB), target_dim))
-
+                            code=cv2.COLOR_BGR2RGB), target_dim))
     # Normalize image.
     image = (image / 255 * 2) - 1
 
@@ -141,7 +140,7 @@ def load_image(path: str, target_dim: Tuple[int] = (256, 256)) -> np.array:
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
-    time = path.split(' ')[1]
+    time = path.split()[1]
     # Shall be 2 or 3 digits
     assert len(time) in [2, 3]
     time = float(time)

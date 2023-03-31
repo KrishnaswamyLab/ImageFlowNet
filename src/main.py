@@ -4,12 +4,13 @@ import numpy as np
 import torch
 import yaml
 from data_utils.prepare_dataset import prepare_dataset
-from nn.ode_models import ConvODEResUNet
+from nn.ode_models import ConvODEResUNet, ResUNet
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
+from utils.metrics import psnr, ssim
 from utils.parse import parse_settings
 from utils.seed import seed_everything
 
@@ -21,15 +22,23 @@ def train(config: AttributeHashmap):
         prepare_dataset(config=config)
 
     # Build the model
-    model = ConvODEResUNet(device=device,
-                           num_filters=config.num_filters,
-                           in_channels=num_image_channel,
-                           out_channels=num_image_channel,
-                           augment_dim=config.ode_augment_dim,
-                           time_dependent=config.ode_time_dependent,
-                           tol=config.ode_tol,
-                           adjoint=config.ode_adjoint,
-                           max_num_steps=config.ode_steps)
+    if config.model == 'ConvODEResUNet':
+        model = ConvODEResUNet(device=device,
+                               num_filters=config.num_filters,
+                               in_channels=num_image_channel,
+                               out_channels=num_image_channel,
+                               augment_dim=config.ode_augment_dim,
+                               time_dependent=config.ode_time_dependent,
+                               tol=config.ode_tol,
+                               adjoint=config.ode_adjoint,
+                               max_num_steps=config.ode_steps)
+    elif config.model == 'ResUNet':
+        model = ResUNet(device=device,
+                        num_filters=config.num_filters,
+                        in_channels=num_image_channel,
+                        out_channels=num_image_channel)
+    else:
+        raise ValueError('`config.model`: %s not supported.' % config.model)
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
@@ -45,7 +54,7 @@ def train(config: AttributeHashmap):
     best_val_loss = np.inf
 
     for epoch_idx in tqdm(range(config.max_epochs)):
-        train_loss = 0
+        train_loss, train_psnr, train_ssim = 0, 0, 0
         model.train()
         optimizer.zero_grad()
         for iter_idx, (images, timestamps) in enumerate(train_set):
@@ -68,6 +77,14 @@ def train(config: AttributeHashmap):
             loss = loss_fn(x_end, x_end_pred)
             train_loss += loss.item()
 
+            image_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
+                1, 2, 0)
+            image_pred = x_end_pred.cpu().detach().numpy().squeeze(
+                0).transpose(1, 2, 0)
+
+            train_psnr += psnr(image_true, image_pred)
+            train_ssim += ssim(image_true, image_pred)
+
             # Simulate `config.batch_size` by batched optimizer update.
             loss.backward()
             if iter_idx % config.batch_size == 0:
@@ -75,15 +92,18 @@ def train(config: AttributeHashmap):
                 optimizer.zero_grad()
 
         train_loss = train_loss / len(train_set.dataset)
+        train_psnr = train_psnr / len(train_set.dataset)
+        train_ssim = train_ssim / len(train_set.dataset)
 
         lr_scheduler.step()
 
-        log('Train [%s/%s] loss: %.3f' %
-            (epoch_idx + 1, config.max_epochs, train_loss),
+        log('Train [%s/%s] loss: %.3f, PSNR: %.3f, SSIM: %.3f' %
+            (epoch_idx + 1, config.max_epochs, train_loss, train_psnr,
+             train_ssim),
             filepath=config.log_dir,
             to_console=False)
 
-        val_loss = 0
+        val_loss, val_psnr, val_ssim = 0, 0, 0
         model.eval()
         with torch.no_grad():
             for (images, timestamps) in val_set:
@@ -100,9 +120,18 @@ def train(config: AttributeHashmap):
                 loss = loss_fn(x_end, x_end_pred)
                 val_loss += loss.item()
 
+                image_true = x_end.cpu().numpy().squeeze(0).transpose(1, 2, 0)
+                image_pred = x_end_pred.cpu().numpy().squeeze(0).transpose(
+                    1, 2, 0)
+                val_psnr += psnr(image_true, image_pred)
+                val_ssim += ssim(image_true, image_pred)
+
         val_loss = val_loss / len(val_set.dataset)
-        log('Validation [%s/%s] loss: %.3f' %
-            (epoch_idx + 1, config.max_epochs, val_loss),
+        val_psnr = val_psnr / len(val_set.dataset)
+        val_ssim = val_ssim / len(val_set.dataset)
+
+        log('Validation [%s/%s] loss: %.3f, PSNR: %.3f, SSIM: %.3f' %
+            (epoch_idx + 1, config.max_epochs, val_loss, val_psnr, val_ssim),
             filepath=config.log_dir,
             to_console=False)
 
@@ -129,15 +158,23 @@ def test(config: AttributeHashmap):
         prepare_dataset(config=config)
 
     # Build the model
-    model = ConvODEResUNet(device=device,
-                           num_filters=config.num_filters,
-                           in_channels=num_image_channel,
-                           out_channels=num_image_channel,
-                           augment_dim=config.ode_augment_dim,
-                           time_dependent=config.ode_time_dependent,
-                           tol=config.ode_tol,
-                           adjoint=config.ode_adjoint,
-                           max_num_steps=config.ode_steps)
+    if config.model == 'ConvODEResUNet':
+        model = ConvODEResUNet(device=device,
+                               num_filters=config.num_filters,
+                               in_channels=num_image_channel,
+                               out_channels=num_image_channel,
+                               augment_dim=config.ode_augment_dim,
+                               time_dependent=config.ode_time_dependent,
+                               tol=config.ode_tol,
+                               adjoint=config.ode_adjoint,
+                               max_num_steps=config.ode_steps)
+    elif config.model == 'ResUNet':
+        model = ResUNet(device=device,
+                        num_filters=config.num_filters,
+                        in_channels=num_image_channel,
+                        out_channels=num_image_channel)
+    else:
+        raise ValueError('`config.model`: %s not supported.' % config.model)
     model.to(device)
     model.load_weights(config.model_save_path, device=device)
     log('ConvODEResUNet: Model weights successfully loaded.', to_console=True)
