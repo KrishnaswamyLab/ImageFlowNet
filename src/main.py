@@ -138,7 +138,7 @@ def train(config: AttributeHashmap):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             model.save_weights(config.model_save_path)
-            log('ConvODEResUNet: Model weights successfully saved.',
+            log('%s: Model weights successfully saved.' % config.model,
                 filepath=config.log_dir,
                 to_console=False)
 
@@ -177,29 +177,44 @@ def test(config: AttributeHashmap):
         raise ValueError('`config.model`: %s not supported.' % config.model)
     model.to(device)
     model.load_weights(config.model_save_path, device=device)
-    log('ConvODEResUNet: Model weights successfully loaded.', to_console=True)
+    log('%s: Model weights successfully loaded.' % config.model,
+        to_console=True)
 
-    # test_loss = torch.nn.MSELoss()
+    loss_fn = torch.nn.MSELoss()
     # output_saver = OutputSaver(save_path=config.output_save_path,
     #                            random_seed=config.random_seed)
 
     # test_loss_recon, test_loss_contrastive, test_loss = 0, 0, 0
     # model.eval()
 
-    # with torch.no_grad():
-    #     for _, (x_test, y_test) in enumerate(test_set):
-    #         x_test = x_test.type(torch.FloatTensor).to(device)
-    #         z, patch_real, patch_recon, z_anchors, z_positives = model(x_test)
+    with torch.no_grad():
+        for iter_idx, (images, timestamps) in enumerate(test_set):
+            assert images.shape[1] == 2
+            assert timestamps.shape[1] == 2
 
-    #         loss_recon = loss_fn_recon(patch_real, patch_recon)
-    #         loss_contrastive = loss_fn_contrastive(z_anchors, z_positives)
-    #         loss = config.lambda_contrastive_loss * \
-    #             loss_contrastive + (1 - config.lambda_contrastive_loss) * loss_recon
+            x_start = images[:, 0, ...].type(torch.FloatTensor).to(device)
+            x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
+            eval_times = timestamps[0].type(torch.FloatTensor).to(device)
 
-    #         B = x_test.shape[0]
-    #         test_loss_recon += loss_recon.item() * B
-    #         test_loss_contrastive += loss_contrastive.item() * B
-    #         test_loss += loss.item() * B
+            x_end_pred = model(x=x_start, eval_times=eval_times)
+
+            from matplotlib import pyplot as plt
+
+            x_start = (x_start + 1) / 2
+            x_end = (x_end + 1) / 2
+            x_end_pred = (x_end_pred + 1)/2
+            plt.subplot(1, 3, 1)
+            plt.imshow(x_start.cpu().numpy().squeeze(0).transpose(1, 2, 0))
+            plt.title('time: %s' % eval_times[0].item())
+            plt.subplot(1, 3, 2)
+            plt.imshow(x_end.cpu().numpy().squeeze(0).transpose(1, 2, 0))
+            plt.title('time: %s' % eval_times[1].item())
+            plt.subplot(1, 3, 3)
+            plt.imshow(x_end_pred.cpu().numpy().squeeze(0).transpose(1, 2, 0))
+            plt.savefig('test.png')
+
+            import pdb
+            pdb.set_trace()
 
     #         # Each pixel embedding recons to a patch.
     #         # Here we only take the center pixel of the reconed patch and collect into a reconed image.
@@ -247,5 +262,5 @@ if __name__ == '__main__':
     if args.mode == 'train':
         train(config=config)
     #     test(config=config)
-    # elif args.mode == 'test':
-    #     test(config=config)
+    elif args.mode == 'test':
+        test(config=config)
