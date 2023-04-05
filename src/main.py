@@ -27,6 +27,7 @@ def train(config: AttributeHashmap):
                                num_filters=config.num_filters,
                                in_channels=num_image_channel,
                                out_channels=num_image_channel,
+                               return_t0=config.ode_return_t0,
                                augment_dim=config.ode_augment_dim,
                                time_dependent=config.ode_time_dependent,
                                tol=config.ode_tol,
@@ -72,9 +73,15 @@ def train(config: AttributeHashmap):
             x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
             eval_times = timestamps[0].type(torch.FloatTensor).to(device)
 
-            x_end_pred = model(x=x_start, eval_times=eval_times)
+            x_pred = model(x=x_start, eval_times=eval_times)
+            if len(x_pred) > 1:
+                x_start_pred, x_end_pred = x_pred
+                loss = loss_fn(x_start, x_start_pred) + loss_fn(
+                    x_end, x_end_pred)
+            else:
+                x_end_pred = x_pred[0]
+                loss = loss_fn(x_end, x_end_pred)
 
-            loss = loss_fn(x_end, x_end_pred)
             train_loss += loss.item()
 
             image_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
@@ -116,8 +123,13 @@ def train(config: AttributeHashmap):
                 x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
                 eval_times = timestamps[0].type(torch.FloatTensor).to(device)
 
-                x_end_pred = model(x=x_start, eval_times=eval_times)
-                loss = loss_fn(x_end, x_end_pred)
+                if len(x_pred) > 1:
+                    x_start_pred, x_end_pred = x_pred
+                    loss = loss_fn(x_start, x_start_pred) + loss_fn(
+                        x_end, x_end_pred)
+                else:
+                    x_end_pred = x_pred[0]
+                    loss = loss_fn(x_end, x_end_pred)
                 val_loss += loss.item()
 
                 image_true = x_end.cpu().numpy().squeeze(0).transpose(1, 2, 0)
@@ -196,13 +208,17 @@ def test(config: AttributeHashmap):
             x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
             eval_times = timestamps[0].type(torch.FloatTensor).to(device)
 
-            x_end_pred = model(x=x_start, eval_times=eval_times)
+            x_pred = model(x=x_start, eval_times=eval_times)
+            if len(x_pred) > 1:
+                x_start_pred, x_end_pred = x_pred
+            else:
+                x_end_pred = x_pred[0]
 
             from matplotlib import pyplot as plt
 
             x_start = (x_start + 1) / 2
             x_end = (x_end + 1) / 2
-            x_end_pred = (x_end_pred + 1)/2
+            x_end_pred = (x_end_pred + 1) / 2
             plt.subplot(1, 3, 1)
             plt.imshow(x_start.cpu().numpy().squeeze(0).transpose(1, 2, 0))
             plt.title('time: %s' % eval_times[0].item())

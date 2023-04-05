@@ -123,12 +123,18 @@ class RetinaGASubset(RetinaGA):
         return images, timestamps
 
 
-def load_image(path: str, target_dim: Tuple[int] = (256, 256)) -> np.array:
+def load_image(path: str, target_dim: Tuple[int] = None) -> np.array:
     ''' Load image as numpy array from a path string.'''
-    image = np.array(
-        cv2.resize(
+    if target_dim is not None:
+        image = np.array(
+            cv2.resize(
+                cv2.cvtColor(cv2.imread(path, cv2.IMREAD_COLOR),
+                             code=cv2.COLOR_BGR2RGB), target_dim))
+    else:
+        image = np.array(
             cv2.cvtColor(cv2.imread(path, cv2.IMREAD_COLOR),
-                            code=cv2.COLOR_BGR2RGB), target_dim))
+                         code=cv2.COLOR_BGR2RGB))
+
     # Normalize image.
     image = (image / 255 * 2) - 1
 
