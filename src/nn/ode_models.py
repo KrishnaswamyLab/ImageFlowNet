@@ -2,11 +2,165 @@ import os
 from typing import List
 
 import torch
-from torch import nn
+from nn.unet_models import ResConvBlock, Stem_Block, ResAttnBlock, Decoder_Block, ASPP
 from torchdiffeq import odeint, odeint_adjoint
 
 
-class ConvODEResUNet(nn.Module):
+class ResUNetPP_ODE(torch.nn.Module):
+
+    def __init__(self,
+                 device: torch.device = torch.device('cpu'),
+                 num_filters: int = 16,
+                 in_channels: int = 3,
+                 out_channels: int = 3,
+                 non_linearity: str = 'relu',
+                 depth: int = 4,
+                 return_t0: bool = False,
+                 augment_dim: int = 0,
+                 time_dependent: bool = False,
+                 tol: float = 1e-3,
+                 adjoint=False,
+                 max_num_steps: int = 1000):
+        '''
+        ResUNetPP_ODE: Adapted from ResUNet++ and Neural ODE
+        Partially inspired by https://github.com/DIAGNijmegen/neural-odes-segmentation
+        ResUNet++: Adapted from https://github.com/DebeshJha/ResUNetPlusPlus
+
+        Parameters
+        ----------
+        device: torch.device
+        num_filters : int
+            Number of convolutional filters.
+        in_channels: int
+            Number of input image channels.
+        out_channels: int
+            Number of output image channels.
+        non_linearity : string
+            One of 'relu' and 'softplus'
+        depth: int
+            Number of layers.
+        return_t0: bool
+            If True, also return output for t0.
+        augment_dim: int
+            Number of augmentation channels to add. If 0 does not augment ODE.
+        time_dependent : bool
+            If True adds time as input, making ODE time dependent.
+        tol: float
+            Error tolerance.
+        adjoint: bool
+            If True calculates gradient with adjoint method, otherwise
+            backpropagates directly through operations of ODE solver.
+        max_num_steps: int
+            Max number of steps in ODE solver.
+        '''
+        super().__init__()
+
+        self.device = device
+        self.in_channels = in_channels
+        self.non_linearity_str = non_linearity
+        if self.non_linearity_str == 'relu':
+            self.non_linearity = torch.nn.ReLU(inplace=True)
+        elif self.non_linearity_str == 'softplus':
+            self.non_linearity = torch.nn.Softplus()
+        self.depth = depth
+
+        self.return_t0 = return_t0
+        self.augment_dim = augment_dim
+        self.time_dependent = time_dependent
+        self.tol = tol
+        self.adjoint = adjoint
+        self.max_num_steps = max_num_steps
+
+        if self.return_t0 is True:
+            raise NotImplementedError
+
+        n_f = num_filters  # shorthand
+
+        self.input_layer = Stem_Block(in_channels, n_f, stride=1)
+
+        self.encoding_path = []
+        self.decoding_path = []
+
+        for d in range(depth):
+            # In the encoding path, we use strided convolution to downsample.
+            self.encoding_path.append(
+                ResAttnBlock(n_f * 2**d, n_f * 2**(d + 1),
+                             stride=2).to(self.device))
+
+            if d < depth - 1:
+                self.decoding_path.append(
+                    Decoder_Block([n_f * 2**d, n_f * 2**(d + 2)],
+                                n_f * 2**(d + 1)).to(self.device))
+            else:
+                self.decoding_path.append(
+                    Decoder_Block(
+                        [n_f * 2**d, n_f * 2**(d + 2) + self.augment_dim],
+                        n_f * 2**(d + 1)).to(self.device))
+
+        self.bottleneck = ASPP(n_f * 2**depth, n_f * 2**(depth + 1))
+
+        self.odeblock_embedding = self._make_ode_block(
+            prev_channels=n_f * 2**(depth + 1),
+            curr_channels=n_f * 2**(depth + 1))
+
+        self.output_layer = torch.nn.Sequential(
+            ASPP(n_f * 2, n_f),
+            torch.nn.Conv2d(n_f, out_channels, kernel_size=1, padding=0))
+
+    def forward(self, x: torch.Tensor, eval_times: None):
+        '''
+        In the current implementation, we assume `eval_times` is
+        an array of 2 elements, containing [t_begin, t_end].
+        '''
+        x_pyramid = []
+
+        x = self.input_layer(x)
+        x_pyramid.append(x)
+
+        for encoding_layer in self.encoding_path:
+            x = encoding_layer(x)
+            x_pyramid.append(x)
+        x_pyramid.pop(-1)  # Don't need the last one.
+
+        x = self.bottleneck(x)
+
+        # Assuming `eval_times` contains [t_start, t_end].
+        # Take features from x_0 and x_T separately,
+        # and enforce reconstruction separately.
+        x = self.odeblock_embedding(x, eval_times=eval_times)[-1]
+
+        for decoding_layer in self.decoding_path[::-1]:
+            x = decoding_layer(x_pyramid.pop(-1), x)
+
+        x = self.output_layer(x)
+
+        return [x]
+
+    def _make_ode_block(self, prev_channels: int, curr_channels: int):
+        ode_func = ConvODEFunc(device=self.device,
+                               prev_channels=prev_channels,
+                               num_filters=curr_channels,
+                               augment_dim=self.augment_dim,
+                               time_dependent=self.time_dependent,
+                               non_linearity=self.non_linearity_str)
+        return ODEBlock(device=self.device,
+                        odefunc=ode_func,
+                        is_conv=True,
+                        tol=self.tol,
+                        adjoint=self.adjoint,
+                        max_num_steps=self.max_num_steps)
+
+    def save_weights(self, model_save_path: str) -> None:
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        torch.save(self.state_dict(), model_save_path)
+        return
+
+    def load_weights(self, model_save_path: str, device: torch.device) -> None:
+        self.load_state_dict(torch.load(model_save_path, map_location=device))
+        return
+
+
+class ConvODEResUNet(torch.nn.Module):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -61,36 +215,25 @@ class ConvODEResUNet(nn.Module):
         self.max_num_steps = max_num_steps
         self.non_linearity_str = non_linearity
         if self.non_linearity_str == 'relu':
-            self.non_linearity = nn.ReLU(inplace=True)
+            self.non_linearity = torch.nn.ReLU(inplace=True)
         elif self.non_linearity_str == 'softplus':
-            self.non_linearity = nn.Softplus()
+            self.non_linearity = torch.nn.Softplus()
 
         n_f = num_filters  # shorthand for simplicity
 
-        self.conv1x1 = nn.Conv2d(in_channels, n_f, 1, 1)
-        self.conv_down_1 = ResConvBlock(n_f)
-        self.conv_down_1_2 = nn.Conv2d(n_f, n_f * 2, 1, 1)
-        self.conv_down_2 = ResConvBlock(n_f * 2)
-        self.conv_down_2_3 = nn.Conv2d(n_f * 2, n_f * 4, 1, 1)
-        self.conv_down_3 = ResConvBlock(n_f * 4)
-        self.conv_down_3_4 = nn.Conv2d(n_f * 4, n_f * 8, 1, 1)
-        self.conv_down_4 = ResConvBlock(n_f * 8)
-        self.conv_down_4_embed = nn.Conv2d(n_f * 8, n_f * 16, 1, 1)
+        self.conv_down_1 = ResConvBlock(in_channels, n_f)
+        self.conv_down_2 = ResConvBlock(n_f, n_f * 2)
+        self.conv_down_3 = ResConvBlock(n_f * 2, n_f * 4)
+        self.conv_down_4 = ResConvBlock(n_f * 4, n_f * 8)
 
-        self.odeblock_embedding = self._make_ode_block(prev_channels=n_f * 16,
-                                                       curr_channels=n_f * 16)
+        self.odeblock_embedding = self._make_ode_block(prev_channels=n_f * 8,
+                                                       curr_channels=n_f * 8)
 
-        self.conv_up_embed_4 = nn.Conv2d(n_f * 16 + self.augment_dim + n_f * 8,
-                                         n_f * 8, 1, 1)
-        self.conv_up_4 = ResUpConvBlock(n_f * 8)
-        self.conv_up_4_3 = nn.Conv2d(n_f * 8 + n_f * 4, n_f * 4, 1, 1)
-        self.conv_up_3 = ResUpConvBlock(n_f * 4)
-        self.conv_up_3_2 = nn.Conv2d(n_f * 4 + n_f * 2, n_f * 2, 1, 1)
-        self.conv_up_2 = ResUpConvBlock(n_f * 2)
-        self.conv_up_2_1 = nn.Conv2d(n_f * 2 + n_f, n_f, 1, 1)
-        self.conv_up_1 = ResUpConvBlock(n_f)
-
-        self.out_layer = nn.Conv2d(n_f, out_channels, 1)
+        self.conv_up_4 = ResConvBlock(n_f * 8 + self.augment_dim + n_f * 4,
+                                      n_f * 4)
+        self.conv_up_3 = ResConvBlock(n_f * 4 + n_f * 4, n_f * 2)
+        self.conv_up_2 = ResConvBlock(n_f * 2 + n_f * 2, n_f)
+        self.conv_up_1 = ResConvBlock(n_f + n_f, out_channels)
 
     def _make_ode_block(self, prev_channels: int, curr_channels: int):
         ode_func = ConvODEFunc(device=self.device,
@@ -110,36 +253,32 @@ class ConvODEResUNet(nn.Module):
                        skip_tensors: List[torch.Tensor]) -> torch.Tensor:
         x_scale1, x_scale2, x_scale3, x_scale4 = skip_tensors
 
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.interpolate(x,
+                                            scale_factor=2,
+                                            mode='bilinear',
+                                            align_corners=True)
         x = torch.cat((x, x_scale4), dim=1)
-        x = self.non_linearity(self.conv_up_embed_4(x))
         x = self.conv_up_4(x)
 
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.interpolate(x,
+                                            scale_factor=2,
+                                            mode='bilinear',
+                                            align_corners=True)
         x = torch.cat((x, x_scale3), dim=1)
-        x = self.non_linearity(self.conv_up_4_3(x))
         x = self.conv_up_3(x)
 
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.interpolate(x,
+                                            scale_factor=2,
+                                            mode='bilinear',
+                                            align_corners=True)
         x = torch.cat((x, x_scale2), dim=1)
-        x = self.non_linearity(self.conv_up_3_2(x))
         x = self.conv_up_2(x)
 
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.interpolate(x,
+                                            scale_factor=2,
+                                            mode='bilinear',
+                                            align_corners=True)
         x = torch.cat((x, x_scale1), dim=1)
-        x = self.non_linearity(self.conv_up_2_1(x))
         x = self.conv_up_1(x)
 
         return self.out_layer(x)
@@ -155,35 +294,17 @@ class ConvODEResUNet(nn.Module):
         if eval_times[0] != 0:
             eval_times = eval_times - eval_times[0]
 
-        x = self.non_linearity(self.conv1x1(x))
-
         x_scale1 = self.conv_down_1(x)
-        x = self.non_linearity(self.conv_down_1_2(x_scale1))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.max_pool2d(x_scale1, kernel_size=2)
 
         x_scale2 = self.conv_down_2(x)
-        x = self.non_linearity(self.conv_down_2_3(x_scale2))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.max_pool2d(x_scale2, kernel_size=2)
 
         x_scale3 = self.conv_down_3(x)
-        x = self.non_linearity(self.conv_down_3_4(x_scale3))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.max_pool2d(x_scale3, kernel_size=2)
 
         x_scale4 = self.conv_down_4(x)
-        x = self.non_linearity(self.conv_down_4_embed(x_scale4))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
+        x = torch.nn.functional.max_pool2d(x_scale4, kernel_size=2)
 
         # Assuming `eval_times` contains [t_start, t_end].
         # Take features from x_0 and x_T separately,
@@ -211,202 +332,12 @@ class ConvODEResUNet(nn.Module):
         return
 
 
-class ResUNet(nn.Module):
-
-    def __init__(self,
-                 device: torch.device = torch.device('cpu'),
-                 num_filters: int = 16,
-                 in_channels: int = 3,
-                 out_channels: int = 3,
-                 non_linearity: str = 'softplus'):
-        '''
-        A Residual U-Net model.
-
-        Parameters
-        ----------
-        device: torch.device
-        num_filters : int
-            Number of convolutional filters.
-        in_channels: int
-            Number of input image channels.
-        out_channels: int
-            Number of output image channels.
-        non_linearity : string
-            One of 'relu' and 'softplus'
-        '''
-        super(ResUNet, self).__init__()
-
-        self.device = device
-        self.in_channels = in_channels
-        self.non_linearity_str = non_linearity
-        if self.non_linearity_str == 'relu':
-            self.non_linearity = nn.ReLU(inplace=True)
-        elif self.non_linearity_str == 'softplus':
-            self.non_linearity = nn.Softplus()
-
-        n_f = num_filters  # shorthand
-
-        self.conv1x1 = nn.Conv2d(in_channels, n_f, 1, 1)
-        self.conv_down_1 = ResConvBlock(n_f)
-        self.conv_down_1_2 = nn.Conv2d(n_f, n_f * 2, 1, 1)
-        self.conv_down_2 = ResConvBlock(n_f * 2)
-        self.conv_down_2_3 = nn.Conv2d(n_f * 2, n_f * 4, 1, 1)
-        self.conv_down_3 = ResConvBlock(n_f * 4)
-        self.conv_down_3_4 = nn.Conv2d(n_f * 4, n_f * 8, 1, 1)
-        self.conv_down_4 = ResConvBlock(n_f * 8)
-        self.conv_down_4_embed = nn.Conv2d(n_f * 8, n_f * 16, 1, 1)
-
-        self.block_embedding = ResConvBlock(n_f * 16)
-
-        self.conv_up_embed_4 = nn.Conv2d(n_f * 16 + n_f * 8, n_f * 8, 1, 1)
-        self.conv_up_4 = ResUpConvBlock(n_f * 8)
-        self.conv_up_4_3 = nn.Conv2d(n_f * 8 + n_f * 4, n_f * 4, 1, 1)
-        self.conv_up_3 = ResUpConvBlock(n_f * 4)
-        self.conv_up_3_2 = nn.Conv2d(n_f * 4 + n_f * 2, n_f * 2, 1, 1)
-        self.conv_up_2 = ResUpConvBlock(n_f * 2)
-        self.conv_up_2_1 = nn.Conv2d(n_f * 2 + n_f, n_f, 1, 1)
-        self.conv_up_1 = ResUpConvBlock(n_f)
-
-        self.out_layer = nn.Conv2d(n_f, out_channels, 1)
-
-    def forward(self, x: torch.Tensor, eval_times: None):
-        '''
-        `interpolate` is used as a drop-in replacement for MaxPool2d.
-
-        `eval_times` is a dummy input argument.
-        '''
-        x = self.non_linearity(self.conv1x1(x))
-
-        x_scale1 = self.conv_down_1(x)
-        x = self.non_linearity(self.conv_down_1_2(x_scale1))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x_scale2 = self.conv_down_2(x)
-        x = self.non_linearity(self.conv_down_2_3(x_scale2))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x_scale3 = self.conv_down_3(x)
-        x = self.non_linearity(self.conv_down_3_4(x_scale3))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x_scale4 = self.conv_down_4(x)
-        x = self.non_linearity(self.conv_down_4_embed(x_scale4))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x = self.block_embedding(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = torch.cat((x, x_scale4), dim=1)
-        x = self.non_linearity(self.conv_up_embed_4(x))
-        x = self.conv_up_4(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = torch.cat((x, x_scale3), dim=1)
-        x = self.non_linearity(self.conv_up_4_3(x))
-        x = self.conv_up_3(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = torch.cat((x, x_scale2), dim=1)
-        x = self.non_linearity(self.conv_up_3_2(x))
-        x = self.conv_up_2(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = torch.cat((x, x_scale1), dim=1)
-        x = self.non_linearity(self.conv_up_2_1(x))
-        x = self.conv_up_1(x)
-
-        output = self.out_layer(x)
-
-        return [output]
-
-    def save_weights(self, model_save_path: str) -> None:
-        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
-        torch.save(self.state_dict(), model_save_path)
-        return
-
-    def load_weights(self, model_save_path: str, device: torch.device) -> None:
-        self.load_state_dict(torch.load(model_save_path, map_location=device))
-        return
-
-
-class ResConvBlock(nn.Module):
-
-    def __init__(self, num_filters):
-        super(ResConvBlock, self).__init__()
-        self.conv = nn.Sequential(
-            nn.InstanceNorm2d(num_filters),
-            nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), nn.ReLU(inplace=True),
-            nn.InstanceNorm2d(num_filters),
-            nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), nn.ReLU(inplace=True))
-
-    def forward(self, x):
-        return self.conv(x) + x
-
-
-class ResUpConvBlock(nn.Module):
-
-    def __init__(self, num_filters):
-        super(ResUpConvBlock, self).__init__()
-        self.upconv = nn.Sequential(
-            nn.InstanceNorm2d(num_filters),
-            nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), nn.ReLU(inplace=True),
-            nn.InstanceNorm2d(num_filters),
-            nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), nn.ReLU(inplace=True))
-
-    def forward(self, x):
-        return self.upconv(x) + x
-
-
 # =============================================================================================== #
 # Below this line are modules adapted from https://github.com/EmilienDupont/augmented-neural-odes #
 # =============================================================================================== #
 
 
-class ODEFunc(nn.Module):
+class ODEFunc(torch.nn.Module):
     """MLP modeling the derivative of ODE system.
     Parameters
     ----------
@@ -441,16 +372,16 @@ class ODEFunc(nn.Module):
         self.time_dependent = time_dependent
 
         if time_dependent:
-            self.fc1 = nn.Linear(self.input_dim + 1, hidden_dim)
+            self.fc1 = torch.nn.Linear(self.input_dim + 1, hidden_dim)
         else:
-            self.fc1 = nn.Linear(self.input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, self.input_dim)
+            self.fc1 = torch.nn.Linear(self.input_dim, hidden_dim)
+        self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = torch.nn.Linear(hidden_dim, self.input_dim)
 
         if non_linearity == 'relu':
-            self.non_linearity = nn.ReLU(inplace=True)
+            self.non_linearity = torch.nn.ReLU(inplace=True)
         elif non_linearity == 'softplus':
-            self.non_linearity = nn.Softplus()
+            self.non_linearity = torch.nn.Softplus()
 
     def forward(self, t, x):
         """
@@ -480,7 +411,7 @@ class ODEFunc(nn.Module):
         return out
 
 
-class ODEBlock(nn.Module):
+class ODEBlock(torch.nn.Module):
     """Solves ODE defined by odefunc.
     Parameters
     ----------
@@ -554,7 +485,7 @@ class ODEBlock(nn.Module):
                                  integration_time,
                                  rtol=self.tol,
                                  atol=self.tol,
-                                 method='dopri5',
+                                 method='dopri8',
                                  options={'max_num_steps': self.max_num_steps})
         else:
             out = odeint(self.odefunc,
@@ -562,7 +493,7 @@ class ODEBlock(nn.Module):
                          integration_time,
                          rtol=self.tol,
                          atol=self.tol,
-                         method='dopri5',
+                         method='dopri8',
                          options={'max_num_steps': self.max_num_steps})
 
         if eval_times is None:
@@ -583,7 +514,7 @@ class ODEBlock(nn.Module):
         return self.forward(x, eval_times=integration_time)
 
 
-class Conv2dTime(nn.Conv2d):
+class Conv2dTime(torch.nn.Conv2d):
     """
     Implements time dependent 2d convolutions, by appending the time variable as
     an extra channel.
@@ -600,7 +531,7 @@ class Conv2dTime(nn.Conv2d):
         return super(Conv2dTime, self).forward(t_and_x)
 
 
-class ConvODEFunc(nn.Module):
+class ConvODEFunc(torch.nn.Module):
     """Convolutional block modeling the derivative of ODE system.
     Parameters
     ----------
@@ -650,26 +581,26 @@ class ConvODEFunc(nn.Module):
                                     stride=1,
                                     padding=0)
         else:
-            self.conv1 = nn.Conv2d(self.prev_channels,
-                                   self.num_filters,
-                                   kernel_size=1,
-                                   stride=1,
-                                   padding=0)
-            self.conv2 = nn.Conv2d(self.num_filters,
-                                   self.num_filters,
-                                   kernel_size=3,
-                                   stride=1,
-                                   padding=1)
-            self.conv3 = nn.Conv2d(self.num_filters,
-                                   self.prev_channels,
-                                   kernel_size=1,
-                                   stride=1,
-                                   padding=0)
+            self.conv1 = torch.nn.Conv2d(self.prev_channels,
+                                         self.num_filters,
+                                         kernel_size=1,
+                                         stride=1,
+                                         padding=0)
+            self.conv2 = torch.nn.Conv2d(self.num_filters,
+                                         self.num_filters,
+                                         kernel_size=3,
+                                         stride=1,
+                                         padding=1)
+            self.conv3 = torch.nn.Conv2d(self.num_filters,
+                                         self.prev_channels,
+                                         kernel_size=1,
+                                         stride=1,
+                                         padding=0)
 
         if non_linearity == 'relu':
-            self.non_linearity = nn.ReLU(inplace=True)
+            self.non_linearity = torch.nn.ReLU(inplace=True)
         elif non_linearity == 'softplus':
-            self.non_linearity = nn.Softplus()
+            self.non_linearity = torch.nn.Softplus()
 
     def forward(self, t, x):
         """

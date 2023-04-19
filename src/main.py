@@ -4,8 +4,9 @@ import numpy as np
 import torch
 import yaml
 from data_utils.prepare_dataset import prepare_dataset
-from nn.ode_models import ConvODEResUNet, ResUNet
+from nn.ode_models import ResUNetPP_ODE
 from nn.scheduler import LinearWarmupCosineAnnealingLR
+from nn.unet_models import ResUNetPP
 from tqdm import tqdm
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
@@ -23,23 +24,43 @@ def train(config: AttributeHashmap):
 
     # Build the model
     if config.model == 'ConvODEResUNet':
-        model = ConvODEResUNet(device=device,
-                               num_filters=config.num_filters,
-                               in_channels=num_image_channel,
-                               out_channels=num_image_channel,
-                               return_t0=config.ode_return_t0,
-                               augment_dim=config.ode_augment_dim,
-                               time_dependent=config.ode_time_dependent,
-                               tol=config.ode_tol,
-                               adjoint=config.ode_adjoint,
-                               max_num_steps=config.ode_steps)
+        raise NotImplementedError
+        # model = ConvODEResUNet(device=device,
+        #                        num_filters=config.num_filters,
+        #                        in_channels=num_image_channel,
+        #                        out_channels=num_image_channel,
+        #                        return_t0=config.ode_return_t0,
+        #                        augment_dim=config.ode_augment_dim,
+        #                        time_dependent=config.ode_time_dependent,
+        #                        tol=config.ode_tol,
+        #                        adjoint=config.ode_adjoint,
+        #                        max_num_steps=config.ode_steps)
+    elif config.model == 'ResUNetPP_ODE':
+        model = ResUNetPP_ODE(device=device,
+                              num_filters=config.num_filters,
+                              in_channels=num_image_channel,
+                              out_channels=num_image_channel,
+                              return_t0=config.ode_return_t0,
+                              augment_dim=config.ode_augment_dim,
+                              time_dependent=config.ode_time_dependent,
+                              tol=config.ode_tol,
+                              adjoint=config.ode_adjoint,
+                              max_num_steps=config.ode_steps)
     elif config.model == 'ResUNet':
-        model = ResUNet(device=device,
-                        num_filters=config.num_filters,
-                        in_channels=num_image_channel,
-                        out_channels=num_image_channel)
+        raise NotImplementedError
+        # model = ResUNet(device=device,
+        #                 num_filters=config.num_filters,
+        #                 in_channels=num_image_channel,
+        #                 out_channels=num_image_channel)
+    elif config.model == 'ResUNetPP':
+        model = ResUNetPP(device=device,
+                          num_filters=config.num_filters,
+                          in_channels=num_image_channel,
+                          out_channels=num_image_channel,
+                          depth=config.model_depth)
     else:
         raise ValueError('`config.model`: %s not supported.' % config.model)
+
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
