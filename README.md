@@ -22,8 +22,17 @@ conda activate mip
 conda install -c conda-forge torchdiffeq
 conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
 conda install scikit-image pillow matplotlib seaborn tqdm -c anaconda
-pip install opencv-python
-pip install -U roifile[all]
+python -m pip install opencv-python
+python -m pip install -U roifile[all]
+python -m pip install click
+python -m pip install psutil
+python -m pip install tensorboard
+python -m pip install pytorch-ssim
+
+# StyleGAN2
+conda install pytorch-gpu==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cudatoolkit=11.1 -c pytorch -c conda-forge
+python3 -m pip install setuptools==59.5.0
+python3 -m pip install ninja
 ```
 <!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
 Installation usually takes between 20 minutes and 1 hour on a normal desktop computer.
