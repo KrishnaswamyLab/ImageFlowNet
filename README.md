@@ -33,9 +33,16 @@ python -m pip install pytorch-ssim
 conda install pytorch-gpu==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cudatoolkit=11.1 -c pytorch -c conda-forge
 python3 -m pip install setuptools==59.5.0
 python3 -m pip install ninja
+
+
+# 1. Use requirements
+conda env create --file requirements.yaml
+# 2. Additional installation
+conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
+python -m pip install opencv-python
+
 ```
 <!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
-Installation usually takes between 20 minutes and 1 hour on a normal desktop computer.
 
 ## Usage
 
