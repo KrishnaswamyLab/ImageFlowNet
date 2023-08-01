@@ -40,12 +40,22 @@ conda env create --file requirements.yaml
 # 2. Additional installation
 conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
 python -m pip install opencv-python
-
 ```
+## DEBUG:
+1. OSError: xxxx/libcublas.so.11: undefined symbol: cublasLtBIIMatmulAlgoGetHeuristic, version libcublasLt.so.11
+```
+# In this case, you may need to add the correct location of `libcublasLt.so.11` into the environment variable `$LD_LIBRARY_PATH`.
+# For me, this means:
+export LD_LIBRARY_PATH=/PATH_TO_MY_CONDA_ENV/.conda_envs/mip-i2sb/lib:$LD_LIBRARY_PATH
+```
+
 <!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
 
 ## Usage
+```
+python train.py --cond-x1 --log-writer wandb --wandb-api-key a8e550aa2ec6835c2890425e63b466a8b46c01ab --wandb-user cl2482
+```
 
 
 ## Acknowledgements
-ODE modules adapated from https://github.com/EmilienDupont/augmented-neural-odes and https://github.com/DIAGNijmegen/neural-odes-segmentation.
+Codebase heavily adapted from [I^2SB: Image-to-Image Schrodinger Bridge](https://github.com/NVlabs/I2SB)

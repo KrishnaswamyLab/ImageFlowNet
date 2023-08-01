@@ -44,7 +44,7 @@ class WandBWriter(BaseWriter):
         super(WandBWriter,self).__init__(opt)
         if self.rank == 0:
             assert wandb.login(key=opt.wandb_api_key)
-            wandb.init(dir=str(opt.log_dir), project="i2sb", entity=opt.wandb_user, name=opt.name, config=vars(opt))
+            wandb.init(dir=str(opt.log_dir), project="mip-i2sb", entity=opt.wandb_user, name=opt.name, config=vars(opt))
 
     def add_scalar(self, step, key, val):
         if self.rank == 0: wandb.log({key: val}, step=step)

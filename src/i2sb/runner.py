@@ -113,20 +113,23 @@ class Runner(object):
         return pred_x0
 
     def sample_batch(self, opt, loader, corrupt_method):
-        if opt.corrupt == "mixture" or "inpaint" in opt.corrupt:
-            return NotImplementedError('Mixture and Inpainting are not relevant to our task.')
-        else:
-            # In the Retina Dataset (return_format == 'array'),
-            # the dataloader returns 2 objects:
-            #   - the image array: [1, N, C, H, W], where N is number of images.
-            #   - the timestamps: [1, N]
-            img_array, t = next(loader)
-            clean_img = img_array[:, 0].float()
-            t0 = t[:, 0]
-            y = img_array[:, -1].float()
-            with torch.no_grad():
-                corrupt_img = corrupt_method(clean_img.to(opt.device))
-            mask = None
+        # Here we only implement the trajectory interpolation method.
+        # We won't perform denosing, inpainting, colorization, etc.
+        assert 'traj' in opt.corrupt
+
+        # In the Retina Dataset (return_format == 'array'),
+        # the dataloader returns 2 objects:
+        #   - the image array: [1, N, C, H, W], where N is number of images.
+        #   - the timestamps: [1, N]
+        img_array, t_array = next(loader)
+        clean_img = img_array[:, -1].float()
+
+        with torch.no_grad():
+            corrupt_img = corrupt_method(img_array.to(opt.device),
+                                         t_array.to(opt.device))
+        mask = None
+        # Dummy label
+        y = torch.ones_like(t_array[:, 0]).int()
 
         # os.makedirs(".debug", exist_ok=True)
         # tu.save_image((clean_img+1)/2, ".debug/clean.png", nrow=4)
@@ -136,13 +139,8 @@ class Runner(object):
         y  = y.detach().to(opt.device)
         x0 = clean_img.detach().to(opt.device)
         x1 = corrupt_img.detach().to(opt.device)
-        if mask is not None:
-            mask = mask.detach().to(opt.device)
-            x1 = (1. - mask) * x1 + mask * torch.randn_like(x1)
-        cond = x1.detach() if opt.cond_x1 else None
 
-        if opt.add_x1_noise: # only for decolor
-            x1 = x1 + torch.randn_like(x1)
+        cond = x1.detach() if opt.cond_x1 else None
 
         assert x0.shape == x1.shape
 
