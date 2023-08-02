@@ -38,14 +38,6 @@ def build_corruption(opt, log, corrupt_type=None):
     elif 'mixture' in corrupt_type:
         method = None #
 
-    elif 'traj' in corrupt_type:
-        '''
-        In our study, we only use the following `corrupt_type`: 'trajectory'.
-        Strictly speaking, it's not even a corruption. It is image interpolation/extrapolation.
-        '''
-        from .trajectory import build_trajectory
-        method = build_trajectory(opt, log)
-
     else:
         raise RuntimeWarning(f"Unknown corruption: {corrupt_type}!")
 

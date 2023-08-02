@@ -11,7 +11,11 @@ from data_utils.extend import ExtendedDataset
 from data_utils.split import split_indices
 
 
-def build_dataset(opt, log, split: str, num_workers: int = 4):
+def build_dataset(opt,
+                  log,
+                  split: str,
+                  num_workers: int = 4,
+                  return_time_range: bool = False):
     # Read dataset.
     if opt.dataset_name.name == 'retina':
         dataset = RetinaDataset(base_path=opt.dataset_dir,
@@ -69,8 +73,10 @@ def build_dataset(opt, log, split: str, num_workers: int = 4):
     log.info(
         f"[Dataset] Built Retina dataset ({split} set), size={len(subset)}!")
 
-    # return subset_loader, num_image_channel
-    return subset
+    if return_time_range:
+        return subset, dataset.time_range
+    else:
+        return subset
 
 
 class RetinaDataset(Dataset):
@@ -112,6 +118,19 @@ class RetinaDataset(Dataset):
             paths = sorted(glob('%s/*.jpg' % (folder)))
             if len(paths) >= 2:
                 self.image_by_patient.append(paths)
+
+        self.time_range = [None, None]
+        for image_list in self.image_by_patient:
+            timestamps = np.array([get_time(p) for p in image_list])
+            for t in timestamps:
+                if self.time_range[0] is None:
+                    self.time_range[0] = t
+                if self.time_range[1] is None:
+                    self.time_range[1] = t
+                if t < self.time_range[0]:
+                    self.time_range[0] = t
+                if t > self.time_range[1]:
+                    self.time_range[1] = t
 
     def __len__(self) -> int:
         return len(self.image_by_patient)

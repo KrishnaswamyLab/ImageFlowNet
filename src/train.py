@@ -44,7 +44,7 @@ def create_training_options():
     # --------------- basic ---------------
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed",           type=int,   default=0)
-    parser.add_argument("--name",           type=str,   default=None,        help="experiment ID")
+    parser.add_argument("--name",           type=str,   default='exp1',      help="experiment ID")
     parser.add_argument("--ckpt",           type=str,   default=None,        help="resumed checkpoint name")
     parser.add_argument("--gpu",            type=int,   default=None,        help="set only if you wish to run on a particular device")
     parser.add_argument("--n-gpu-per-node", type=int,   default=1,           help="number of gpu on each node")
@@ -57,12 +57,13 @@ def create_training_options():
     parser.add_argument("--image-size",            type=int,   default=256)
     parser.add_argument("--train-val-test-ratio",  type=str,   default="6:2:2")
     parser.add_argument("--dataset-return-format", type=str,   default="array")
-    parser.add_argument("--corrupt",               type=str,   default='traj-bicubic',    help="restoration task")
-    parser.add_argument("--t0",                    type=float, default=1e-4,              help="sigma start time in network parametrization")
-    parser.add_argument("--T",                     type=float, default=1.0,               help="sigma end time in network parametrization")
-    parser.add_argument("--interval",              type=int,   default=1000,              help="number of interval")
+    parser.add_argument("--corrupt",               type=str,   default=None,              help="restoration task")
+    parser.add_argument("--interp",                type=str,   default='linear_pair',     help="image trajectory interpolation method")
+    # parser.add_argument("--t0",                    type=float, default=1e-4,              help="sigma start time in network parametrization")
+    # parser.add_argument("--T",                     type=float, default=1.0,               help="sigma end time in network parametrization")
+    parser.add_argument("--interval",              type=int,   default=100,               help="number of interval")
     parser.add_argument("--beta-max",              type=float, default=0.3,               help="max diffusion for the diffusion model")
-    # parser.add_argument("--beta-min",       type=float, default=0.1)
+    # parser.add_argument("--beta-min",              type=float, default=0.1)
     parser.add_argument("--ot-ode",                action="store_true",                   help="use OT-ODE model")
     parser.add_argument("--clip-denoise",          action="store_true",                   help="clamp predicted image to [-1,1] at each")
 
@@ -73,7 +74,7 @@ def create_training_options():
     # --------------- optimizer and loss ---------------
     parser.add_argument("--batch-size",     type=int,   default=256)
     parser.add_argument("--microbatch",     type=int,   default=1,           help="accumulate gradient over microbatch until full batch-size")
-    parser.add_argument("--num-itr",        type=int,   default=1000000,     help="training iteration")
+    parser.add_argument("--num-itr",        type=int,   default=10000,       help="training iteration")
     parser.add_argument("--lr",             type=float, default=5e-5,        help="learning rate")
     parser.add_argument("--lr-gamma",       type=float, default=0.99,        help="learning rate decay ratio")
     parser.add_argument("--lr-step",        type=int,   default=1000,        help="learning rate decay step size")
@@ -130,7 +131,7 @@ def main(opt):
         set_seed(opt.seed + opt.global_rank)
 
     # build retina dataset
-    train_dataset = retina.build_dataset(opt, log, split='train')
+    train_dataset, time_range = retina.build_dataset(opt, log, split='train', return_time_range=True)
     val_dataset = retina.build_dataset(opt, log, split='val')
     # note: images should be normalized to [-1,1] for corruption methods to work properly
 
@@ -139,17 +140,13 @@ def main(opt):
         train_dataset = mix.MixtureCorruptDatasetTrain(opt, train_dataset)
         val_dataset = mix.MixtureCorruptDatasetVal(opt, val_dataset)
 
-    # build corruption method
-    corrupt_method = build_corruption(opt, log)
-
+    opt.time_range = time_range
     run = Runner(opt, log)
-    run.train(opt, train_dataset, val_dataset, corrupt_method)
+    run.train(opt, train_dataset, val_dataset)
     log.info("Finish!")
 
 if __name__ == '__main__':
     opt = create_training_options()
-
-    assert opt.corrupt is not None
 
     # one-time download: ADM checkpoint
     download_ckpt("data/")
