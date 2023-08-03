@@ -95,10 +95,7 @@ class Runner(object):
 
         assert opt.time_range[0] > 0
         interp_levels = torch.linspace(
-            opt.time_range[0],
-            opt.time_range[1],
-            opt.interval,
-            device=opt.device) * opt.interval / opt.time_range[1]
+            1e-4, 1.0, opt.interval, device=opt.device) * opt.interval
         self.net = Image256Net(log,
                                interp_levels=interp_levels,
                                use_fp16=opt.use_fp16,
@@ -131,18 +128,20 @@ class Runner(object):
                       interp_method: str = 'linear_pair'):
         """ Use interpolation of the images! """
         if interp_method == 'linear_pair':
-            x_source = images[0][None, ...]
             x_target = images[-1][None, ...]
-            label = torch.lerp(x_source, x_target,
+            x_source = images[0][None, ...]
+            label = torch.lerp(x_target, x_source,
                                (step / torch.tensor(total_steps)).to(
                                    x_source.device))
 
         return label.detach()
 
     def compute_pred_x0(self, step, xt, net_out, clip_denoise=False):
-        """ Given network output, recover x0. This should be the inverse of Eq 12 """
-        std_fwd = self.diffusion.get_std_fwd(step, xdim=xt.shape[1:])
-        pred_x0 = xt - std_fwd * net_out
+        # """ Given network output, recover x0. This should be the inverse of Eq 12 """
+        # std_fwd = self.diffusion.get_std_fwd(step, xdim=xt.shape[1:])
+        # pred_x0 = xt - std_fwd * net_out
+        # NOTE: edited and removed the inverse process above.
+        pred_x0 = net_out
         if clip_denoise: pred_x0.clamp_(-1., 1.)
         return pred_x0
 
@@ -183,20 +182,16 @@ class Runner(object):
         for it in range(opt.num_itr):
             optimizer.zero_grad()
 
-            for _ in range(n_inner_loop):
+            for it_inner in range(n_inner_loop):
                 # ===== sample boundary pair =====
                 images, times, cond = self.sample_batch(opt, train_loader)
 
                 # ===== compute loss =====
-                step = torch.randint(0, opt.interval, (1, ))
+                total_steps = int(
+                    opt.interval * (times[-1] - times[0]) /
+                    (opt.time_range[1] - opt.time_range[0]))
 
-                # interp_indices = []
-                # for t in times:
-                #     interp_level = t * opt.interval / opt.time_range[1]
-                #     interp_indices.append(
-                #         torch.argmin(
-                #             torch.abs(self.net.interp_levels -
-                #                       interp_level)).item())
+                step = torch.randint(0, total_steps, (1, ))
 
                 # x0 is "target", x1 is "source".
                 x0 = images[-1][None, ...]
@@ -206,45 +201,45 @@ class Runner(object):
                 xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode)
 
                 # Interpolated image as pseudo-GT.
-                pseudo_label = self.compute_label(images, step, opt.interval,
+                pseudo_label = self.compute_label(images, step, total_steps,
                                                   opt.interp)
 
                 pred = net(xt, step, cond=cond)
                 assert xt.shape == pseudo_label.shape == pred.shape
 
-                # from matplotlib import pyplot as plt
-                # fig = plt.figure(figsize=(25, 6))
-                # ax = fig.add_subplot(1, 5, 1)
-                # ax.imshow(((x1 + 1) / 2).cpu().detach().numpy().reshape(
-                #     3, 256, 256).transpose(1, 2, 0))
-                # ax.set_title('Source')
-                # ax.set_axis_off()
-                # ax = fig.add_subplot(1, 5, 2)
-                # ax.imshow(((x0 + 1) / 2).cpu().detach().numpy().reshape(
-                #     3, 256, 256).transpose(1, 2, 0))
-                # ax.set_title('Target')
-                # ax.set_axis_off()
-                # ax = fig.add_subplot(1, 5, 3)
-                # ax.imshow(((xt + 1) / 2).cpu().detach().numpy().reshape(
-                #     3, 256, 256).transpose(1, 2, 0))
-                # ax.set_title('Analytic posterior')
-                # ax.set_axis_off()
-                # ax = fig.add_subplot(1, 5, 4)
-                # ax.imshow(
-                #     ((pseudo_label + 1) / 2).cpu().detach().numpy().reshape(
-                #         3, 256, 256).transpose(1, 2, 0))
-                # ax.set_title('Label')
-                # ax.set_axis_off()
-                # ax = fig.add_subplot(1, 5, 5)
-                # ax.imshow(((pred + 1) / 2).cpu().detach().numpy().reshape(
-                #     3, 256, 256).transpose(1, 2, 0))
-                # ax.set_title('Pred')
-                # ax.set_axis_off()
-                # fig.tight_layout()
-                # fig.savefig('check')
-
-                # import pdb
-                # pdb.set_trace()
+                if it % 100 == 0 and it_inner == 0:
+                    sampled_time = (1 - step.item() / opt.interval) * (times[-1] - times[0]) + times[0]
+                    from matplotlib import pyplot as plt
+                    fig = plt.figure(figsize=(25, 6))
+                    ax = fig.add_subplot(1, 5, 1)
+                    ax.imshow(((x1 + 1) / 2).cpu().detach().numpy().reshape(
+                        3, 256, 256).transpose(1, 2, 0))
+                    ax.set_title('Source t = %s' % times[0].item())
+                    ax.set_axis_off()
+                    ax = fig.add_subplot(1, 5, 2)
+                    ax.imshow(((x0 + 1) / 2).cpu().detach().numpy().reshape(
+                        3, 256, 256).transpose(1, 2, 0))
+                    ax.set_title('Target t = %s' % times[-1].item())
+                    ax.set_axis_off()
+                    ax = fig.add_subplot(1, 5, 3)
+                    ax.imshow(((xt + 1) / 2).cpu().detach().numpy().reshape(
+                        3, 256, 256).transpose(1, 2, 0))
+                    ax.set_title('Analytic posterior t = %.1f' % sampled_time)
+                    ax.set_axis_off()
+                    ax = fig.add_subplot(1, 5, 4)
+                    ax.imshow(((pseudo_label + 1) /
+                               2).cpu().detach().numpy().reshape(
+                                   3, 256, 256).transpose(1, 2, 0))
+                    ax.set_title('Label t = %.1f' % sampled_time)
+                    ax.set_axis_off()
+                    ax = fig.add_subplot(1, 5, 5)
+                    ax.imshow(((pred + 1) / 2).cpu().detach().numpy().reshape(
+                        3, 256, 256).transpose(1, 2, 0))
+                    ax.set_title('Pred t = %.1f' % sampled_time)
+                    ax.set_axis_off()
+                    fig.tight_layout()
+                    os.makedirs('./debug_plot/', exist_ok=True)
+                    fig.savefig('./debug_plot/check_%s' % str(it).zfill(5))
 
                 loss = F.mse_loss(pred, pseudo_label)
                 loss.backward()
@@ -263,7 +258,8 @@ class Runner(object):
             if it % 10 == 0:
                 self.writer.add_scalar(it, 'loss', loss.detach())
 
-            if it % 5000 == 0:
+            # if it % 5000 == 0:
+            if it % 200 == 0:
                 if opt.global_rank == 0:
                     torch.save(
                         {
@@ -281,7 +277,8 @@ class Runner(object):
                 if opt.distributed:
                     torch.distributed.barrier()
 
-            if it == 500 or it % 3000 == 0:  # 0, 0.5k, 3k, 6k 9k
+            # if it == 500 or it % 3000 == 0:  # 0, 0.5k, 3k, 6k 9k
+            if it % 200 == 0:
                 net.eval()
                 self.evaluation(opt, it, val_loader)
                 net.train()
@@ -392,9 +389,11 @@ class Runner(object):
 
         log.info("Logging images ...")
         x_recon = xs[:, 0, ...]
+        x_pred = pred_x0s[:, 0, ...]
         log_image("image/source", x_source)
         log_image("image/target", x_target)
         log_image("image/recon", x_recon)
+        log_image("image/pred_target", x_pred)
         log_image("debug/pred_target_traj",
                   pred_x0s.reshape(-1, *xdim),
                   nrow=len_t)
