@@ -161,7 +161,15 @@ class Runner(object):
         x_source = images[0][None, ...]
         cond = x_source.detach() if opt.cond_x1 else None
 
-        return images, times, cond
+        # x0 is "target", x1 is "source".
+        # In our case, x1 is the earlier scan while x0 is the later scan.
+        x0 = images[-1][None, ...].to(opt.device)
+        x1 = images[0][None, ...].to(opt.device)
+
+        t_x0 = times[-1]
+        t_x1 = times[0]
+
+        return x0, x1, t_x0, t_x1, images, times, cond
 
     def train(self, opt, train_dataset, val_dataset):
         self.writer = util.build_log_writer(opt)
@@ -184,18 +192,17 @@ class Runner(object):
 
             for it_inner in range(n_inner_loop):
                 # ===== sample boundary pair =====
-                images, times, cond = self.sample_batch(opt, train_loader)
+                x0, x1, t_x0, t_x1, images, times, cond = self.sample_batch(
+                    opt, train_loader)
 
                 # ===== compute loss =====
-                total_steps = int(
-                    opt.interval * (times[-1] - times[0]) /
-                    (opt.time_range[1] - opt.time_range[0]))
-
-                step = torch.randint(0, total_steps, (1, ))
 
                 # x0 is "target", x1 is "source".
-                x0 = images[-1][None, ...]
-                x1 = images[0][None, ...]
+                # In our case, x1 is the earlier scan while x0 is the later scan.
+                total_steps = int(opt.interval * (t_x0 - t_x1) /
+                                  (opt.time_range[1] - opt.time_range[0]))
+
+                step = torch.randint(0, total_steps, (1, ))
 
                 # Compute the analytic posterior.
                 xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode)
@@ -208,18 +215,20 @@ class Runner(object):
                 assert xt.shape == pseudo_label.shape == pred.shape
 
                 if it % 100 == 0 and it_inner == 0:
-                    sampled_time = (1 - step.item() / opt.interval) * (times[-1] - times[0]) + times[0]
+                    sampled_time = (1 - step.item() / opt.interval) * (
+                        t_x0 - t_x1) + t_x1
+
                     from matplotlib import pyplot as plt
                     fig = plt.figure(figsize=(25, 6))
                     ax = fig.add_subplot(1, 5, 1)
                     ax.imshow(((x1 + 1) / 2).cpu().detach().numpy().reshape(
                         3, 256, 256).transpose(1, 2, 0))
-                    ax.set_title('Source t = %s' % times[0].item())
+                    ax.set_title('Source t = %s' % t_x1.item())
                     ax.set_axis_off()
                     ax = fig.add_subplot(1, 5, 2)
                     ax.imshow(((x0 + 1) / 2).cpu().detach().numpy().reshape(
                         3, 256, 256).transpose(1, 2, 0))
-                    ax.set_title('Target t = %s' % times[-1].item())
+                    ax.set_title('Target t = %s' % t_x0.item())
                     ax.set_axis_off()
                     ax = fig.add_subplot(1, 5, 3)
                     ax.imshow(((xt + 1) / 2).cpu().detach().numpy().reshape(
@@ -352,27 +361,25 @@ class Runner(object):
         log = self.log
         log.info(f"========== Evaluation started: iter={it} ==========")
 
-        images, times, cond = self.sample_batch(opt, val_loader)
-
-        x_source = images[0][None, ...].to(opt.device)
-        x_target = images[-1][None, ...].to(opt.device)
+        x0, x1, t_x0, t_x1, images, times, cond = self.sample_batch(
+            opt, val_loader)
 
         xs, pred_x0s = self.ddpm_sampling(opt,
-                                          x_source,
+                                          x1,
                                           mask=None,
                                           cond=cond,
                                           clip_denoise=opt.clip_denoise,
                                           verbose=opt.global_rank == 0)
 
         log.info("Collecting tensors ...")
-        x_source = all_cat_cpu(opt, log, x_source)
-        x_target = all_cat_cpu(opt, log, x_target)
+        x1 = all_cat_cpu(opt, log, x1)
+        x0 = all_cat_cpu(opt, log, x0)
         # y           = all_cat_cpu(opt, log, y)
         xs = all_cat_cpu(opt, log, xs)
         pred_x0s = all_cat_cpu(opt, log, pred_x0s)
 
         batch, len_t, *xdim = xs.shape
-        assert x_source.shape == x_target.shape == (batch, *xdim)
+        assert x1.shape == x0.shape == (batch, *xdim)
         assert xs.shape == pred_x0s.shape
         # assert y.shape == (batch, )
         log.info(f"Generated recon trajectories: size={xs.shape}")
@@ -390,8 +397,8 @@ class Runner(object):
         log.info("Logging images ...")
         x_recon = xs[:, 0, ...]
         x_pred = pred_x0s[:, 0, ...]
-        log_image("image/source", x_source)
-        log_image("image/target", x_target)
+        log_image("image/source", x1)
+        log_image("image/target", x0)
         log_image("image/recon", x_recon)
         log_image("image/pred_target", x_pred)
         log_image("debug/pred_target_traj",
