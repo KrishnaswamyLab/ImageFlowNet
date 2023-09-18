@@ -8,7 +8,8 @@ import yaml
 from data_utils.prepare_dataset import prepare_dataset
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
-from nn.unet import ResUNet
+from nn.unet import UNet, ResUNet
+from nn.unet_ode import UNetODE, ResUNetODE
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
@@ -24,13 +25,11 @@ def train(config: AttributeHashmap):
         prepare_dataset(config=config)
 
     # Build the model
-    if config.model == 'ResUNet':
-        model = ResUNet(num_filters=config.num_filters,
-                        in_channels=num_image_channel,
-                        out_channels=num_image_channel)
-    elif config.model == 'UNetODE':
-        raise NotImplementedError
-    else:
+    try:
+        model = globals()[config.model](num_filters=config.num_filters,
+                                        in_channels=num_image_channel,
+                                        out_channels=num_image_channel)
+    except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)
@@ -128,7 +127,7 @@ def train(config: AttributeHashmap):
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         model.eval()
         with torch.no_grad():
-            for (images, timestamps) in val_set:
+            for (images, timestamps) in tqdm(val_set):
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
 
@@ -210,13 +209,11 @@ def test(config: AttributeHashmap):
         prepare_dataset(config=config)
 
     # Build the model
-    if config.model == 'ResUNet':
-        model = ResUNet(num_filters=config.num_filters,
-                        in_channels=num_image_channel,
-                        out_channels=num_image_channel)
-    elif config.model == 'UNetODE':
-        raise NotImplementedError
-    else:
+    try:
+        model = globals()[config.model](num_filters=config.num_filters,
+                                        in_channels=num_image_channel,
+                                        out_channels=num_image_channel)
+    except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)

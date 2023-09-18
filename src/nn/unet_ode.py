@@ -1,10 +1,88 @@
-from base import BaseNetwork
-import math
+from .base import BaseNetwork
 import torch
 from torch import nn
+from torchdiffeq import odeint
 
 
-class UNet(BaseNetwork):
+class ConcatConv2d(nn.Module):
+
+    def __init__(self,
+                 dim_in,
+                 dim_out,
+                 ksize=3,
+                 stride=1,
+                 padding=0,
+                 dilation=1,
+                 groups=1,
+                 bias=True,
+                 transpose=False):
+        super(ConcatConv2d, self).__init__()
+        module = nn.ConvTranspose2d if transpose else nn.Conv2d
+        self._layer = module(dim_in + 1,
+                             dim_out,
+                             kernel_size=ksize,
+                             stride=stride,
+                             padding=padding,
+                             dilation=dilation,
+                             groups=groups,
+                             bias=bias)
+
+    def forward(self, t, x):
+        tt = torch.ones_like(x[:, :1, :, :]) * t
+        ttx = torch.cat([tt, x], 1)
+        return self._layer(ttx)
+
+
+class ODEfunc(nn.Module):
+
+    def __init__(self, dim):
+        super(ODEfunc, self).__init__()
+        self.norm1 = nn.GroupNorm(min(32, dim), dim)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = ConcatConv2d(dim, dim, 3, 1, 1)
+        self.norm2 = nn.GroupNorm(min(32, dim), dim)
+        self.conv2 = ConcatConv2d(dim, dim, 3, 1, 1)
+        self.norm3 = nn.GroupNorm(min(32, dim), dim)
+        self.nfe = 0
+
+    def forward(self, t, x):
+        self.nfe += 1
+        out = self.norm1(x)
+        out = self.relu(out)
+        out = self.conv1(t, out)
+        out = self.norm2(out)
+        out = self.relu(out)
+        out = self.conv2(t, out)
+        out = self.norm3(out)
+        return out
+
+
+class ODEBlock(nn.Module):
+
+    def __init__(self, odefunc, tolerance: float = 1e-3):
+        super(ODEBlock, self).__init__()
+        self.odefunc = odefunc
+        self.tolerance = tolerance
+
+    def forward(self, x, integration_time):
+        integration_time = integration_time.type_as(x)
+        out = odeint(self.odefunc,
+                     x,
+                     integration_time,
+                     rtol=self.tolerance,
+                     atol=self.tolerance)
+        return out[1]
+
+    @property
+    def nfe(self):
+        return self.odefunc.nfe
+
+    @nfe.setter
+    def nfe(self, value):
+        self.odefunc.nfe = value
+
+
+class UNetODE(BaseNetwork):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -13,7 +91,7 @@ class UNet(BaseNetwork):
                  out_channels: int = 3,
                  non_linearity: str = 'relu'):
         '''
-        A U-Net model.
+        A U-Net model with ODE.
 
         Parameters
         ----------
@@ -27,7 +105,7 @@ class UNet(BaseNetwork):
         non_linearity : string
             One of 'relu' and 'softplus'
         '''
-        super(UNet, self).__init__()
+        super(UNetODE, self).__init__()
 
         self.device = device
         self.in_channels = in_channels
@@ -62,22 +140,31 @@ class UNet(BaseNetwork):
 
         self.out_layer = nn.Conv2d(n_f, out_channels, 1)
 
-        time_embed_dim = n_f * 16
-        self.time_embed_dim = time_embed_dim
-        self.time_embed = nn.Sequential(
-            torch.nn.Linear(time_embed_dim, time_embed_dim),
-            nn.SiLU(),
-            torch.nn.Linear(time_embed_dim, time_embed_dim),
-        )
+        self.ode_block_1 = ODEBlock(ODEfunc(dim=n_f))
+        self.ode_block_2 = ODEBlock(ODEfunc(dim=n_f * 2))
+        self.ode_block_3 = ODEBlock(ODEfunc(dim=n_f * 4))
+        self.ode_block_4 = ODEBlock(ODEfunc(dim=n_f * 8))
+        self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
         `interpolate` is used as a drop-in replacement for MaxPool2d.
+
+        Time embedding through ODE.
         '''
+
+        assert x.shape[0] == 1
+
+        # Skip ODE if no time difference.
+        use_ode = t.item() != 0
+        if use_ode:
+            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
         x = self.non_linearity(self.conv1x1(x))
 
         x_scale1 = self.conv_down_1(x)
+        if use_ode:
+            x = self.ode_block_1(x, integration_time)
         x = self.non_linearity(self.conv_down_1_2(x_scale1))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -85,6 +172,8 @@ class UNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale2 = self.conv_down_2(x)
+        if use_ode:
+            x = self.ode_block_2(x, integration_time)
         x = self.non_linearity(self.conv_down_2_3(x_scale2))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -92,6 +181,8 @@ class UNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale3 = self.conv_down_3(x)
+        if use_ode:
+            x = self.ode_block_3(x, integration_time)
         x = self.non_linearity(self.conv_down_3_4(x_scale3))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -99,6 +190,8 @@ class UNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale4 = self.conv_down_4(x)
+        if use_ode:
+            x = self.ode_block_4(x, integration_time)
         x = self.non_linearity(self.conv_down_4_embed(x_scale4))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -106,12 +199,8 @@ class UNet(BaseNetwork):
                                       align_corners=False)
 
         x = self.block_embedding(x)
-
-        # Time embedding through feature space addition.
-        assert x.shape[0] == 1 and x.shape[1] == self.time_embed_dim
-        t_emb = self.time_embed(timestep_embedding(t, dim=self.time_embed_dim))
-        t_emb = t_emb[:, :, None, None].repeat((1, 1, x.shape[2], x.shape[3]))
-        x = x + t_emb
+        if use_ode:
+            x = self.ode_block_embedding(x, integration_time)
 
         x = nn.functional.interpolate(x,
                                       scale_factor=2,
@@ -150,7 +239,7 @@ class UNet(BaseNetwork):
         return output
 
 
-class ResUNet(BaseNetwork):
+class ResUNetODE(BaseNetwork):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -159,7 +248,7 @@ class ResUNet(BaseNetwork):
                  out_channels: int = 3,
                  non_linearity: str = 'relu'):
         '''
-        A Residual U-Net model.
+        A Residual U-Net model with ODE.
 
         Parameters
         ----------
@@ -173,7 +262,7 @@ class ResUNet(BaseNetwork):
         non_linearity : string
             One of 'relu' and 'softplus'
         '''
-        super(ResUNet, self).__init__()
+        super(ResUNetODE, self).__init__()
 
         self.device = device
         self.in_channels = in_channels
@@ -208,22 +297,31 @@ class ResUNet(BaseNetwork):
 
         self.out_layer = nn.Conv2d(n_f, out_channels, 1)
 
-        time_embed_dim = n_f * 16
-        self.time_embed_dim = time_embed_dim
-        self.time_embed = nn.Sequential(
-            torch.nn.Linear(time_embed_dim, time_embed_dim),
-            nn.SiLU(),
-            torch.nn.Linear(time_embed_dim, time_embed_dim),
-        )
+        self.ode_block_1 = ODEBlock(ODEfunc(dim=n_f))
+        self.ode_block_2 = ODEBlock(ODEfunc(dim=n_f * 2))
+        self.ode_block_3 = ODEBlock(ODEfunc(dim=n_f * 4))
+        self.ode_block_4 = ODEBlock(ODEfunc(dim=n_f * 8))
+        self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
         `interpolate` is used as a drop-in replacement for MaxPool2d.
+
+        Time embedding through ODE.
         '''
+
+        assert x.shape[0] == 1
+
+        # Skip ODE if no time difference.
+        use_ode = t.item() != 0
+        if use_ode:
+            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
         x = self.non_linearity(self.conv1x1(x))
 
         x_scale1 = self.conv_down_1(x)
+        if use_ode:
+            x = self.ode_block_1(x, integration_time)
         x = self.non_linearity(self.conv_down_1_2(x_scale1))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -231,6 +329,8 @@ class ResUNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale2 = self.conv_down_2(x)
+        if use_ode:
+            x = self.ode_block_2(x, integration_time)
         x = self.non_linearity(self.conv_down_2_3(x_scale2))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -238,6 +338,8 @@ class ResUNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale3 = self.conv_down_3(x)
+        if use_ode:
+            x = self.ode_block_3(x, integration_time)
         x = self.non_linearity(self.conv_down_3_4(x_scale3))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -245,6 +347,8 @@ class ResUNet(BaseNetwork):
                                       align_corners=False)
 
         x_scale4 = self.conv_down_4(x)
+        if use_ode:
+            x = self.ode_block_4(x, integration_time)
         x = self.non_linearity(self.conv_down_4_embed(x_scale4))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -253,11 +357,8 @@ class ResUNet(BaseNetwork):
 
         x = self.block_embedding(x)
 
-        # Time embedding through feature space addition.
-        assert x.shape[0] == 1 and x.shape[1] == self.time_embed_dim
-        t_emb = self.time_embed(timestep_embedding(t, dim=self.time_embed_dim))
-        t_emb = t_emb[:, :, None, None].repeat((1, 1, x.shape[2], x.shape[3]))
-        x = x + t_emb
+        if use_ode:
+            x = self.ode_block_embedding(x, integration_time)
 
         x = nn.functional.interpolate(x,
                                       scale_factor=2,

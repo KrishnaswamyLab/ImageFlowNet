@@ -8,10 +8,11 @@ class BaseNetwork(torch.nn.Module):
     '''
 
     def __init__(self, **kwargs):
-        raise NotImplementedError
+        super(BaseNetwork, self).__init__()
+        pass
 
     def forward(self, *args):
-        raise NotImplementedError
+        pass
 
     def save_weights(self, model_save_path: str) -> None:
         os.makedirs(os.path.dirname(model_save_path), exist_ok=True)

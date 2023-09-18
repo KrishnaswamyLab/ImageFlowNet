@@ -1,4 +1,4 @@
-from base import BaseNetwork
+from .base import BaseNetwork
 import math
 import torch
 from torch import nn
