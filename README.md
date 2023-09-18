@@ -14,9 +14,15 @@ We want to predict the progression of diseases by interpolating or extrapolating
 
 ## Dependencies
 We developed the codebase in a miniconda environment.
-Tested on Python 3.8 + PyTorch 1.12.1.
 How we created the conda environment:
 ```
+conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c nvidia -c anaconda -c conda-forge
+conda activate mip
+python -m pip install timm
+python -m pip install opencv-python
+```
+
+<!-- ```
 conda create --name mip python==3.8
 conda activate mip
 conda install -c conda-forge torchdiffeq
@@ -41,13 +47,14 @@ conda env create --file requirements.yaml
 conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
 python -m pip install opencv-python
 ```
+
 ## DEBUG:
 1. OSError: xxxx/libcublas.so.11: undefined symbol: cublasLtBIIMatmulAlgoGetHeuristic, version libcublasLt.so.11
 ```
 # In this case, you may need to add the correct location of `libcublasLt.so.11` into the environment variable `$LD_LIBRARY_PATH`.
 # For me, this means:
 export LD_LIBRARY_PATH=/PATH_TO_MY_CONDA_ENV/.conda_envs/mip-i2sb/lib:$LD_LIBRARY_PATH
-```
+``` -->
 
 <!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
 
