@@ -140,10 +140,6 @@ class UNetODE(BaseNetwork):
 
         self.out_layer = nn.Conv2d(n_f, out_channels, 1)
 
-        self.ode_block_1 = ODEBlock(ODEfunc(dim=n_f))
-        self.ode_block_2 = ODEBlock(ODEfunc(dim=n_f * 2))
-        self.ode_block_3 = ODEBlock(ODEfunc(dim=n_f * 4))
-        self.ode_block_4 = ODEBlock(ODEfunc(dim=n_f * 8))
         self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
@@ -163,8 +159,6 @@ class UNetODE(BaseNetwork):
         x = self.non_linearity(self.conv1x1(x))
 
         x_scale1 = self.conv_down_1(x)
-        if use_ode:
-            x = self.ode_block_1(x, integration_time)
         x = self.non_linearity(self.conv_down_1_2(x_scale1))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -172,8 +166,6 @@ class UNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale2 = self.conv_down_2(x)
-        if use_ode:
-            x = self.ode_block_2(x, integration_time)
         x = self.non_linearity(self.conv_down_2_3(x_scale2))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -181,8 +173,6 @@ class UNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale3 = self.conv_down_3(x)
-        if use_ode:
-            x = self.ode_block_3(x, integration_time)
         x = self.non_linearity(self.conv_down_3_4(x_scale3))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -190,8 +180,6 @@ class UNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale4 = self.conv_down_4(x)
-        if use_ode:
-            x = self.ode_block_4(x, integration_time)
         x = self.non_linearity(self.conv_down_4_embed(x_scale4))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -297,10 +285,6 @@ class ResUNetODE(BaseNetwork):
 
         self.out_layer = nn.Conv2d(n_f, out_channels, 1)
 
-        self.ode_block_1 = ODEBlock(ODEfunc(dim=n_f))
-        self.ode_block_2 = ODEBlock(ODEfunc(dim=n_f * 2))
-        self.ode_block_3 = ODEBlock(ODEfunc(dim=n_f * 4))
-        self.ode_block_4 = ODEBlock(ODEfunc(dim=n_f * 8))
         self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
@@ -320,8 +304,6 @@ class ResUNetODE(BaseNetwork):
         x = self.non_linearity(self.conv1x1(x))
 
         x_scale1 = self.conv_down_1(x)
-        if use_ode:
-            x = self.ode_block_1(x, integration_time)
         x = self.non_linearity(self.conv_down_1_2(x_scale1))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -329,8 +311,6 @@ class ResUNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale2 = self.conv_down_2(x)
-        if use_ode:
-            x = self.ode_block_2(x, integration_time)
         x = self.non_linearity(self.conv_down_2_3(x_scale2))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -338,8 +318,6 @@ class ResUNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale3 = self.conv_down_3(x)
-        if use_ode:
-            x = self.ode_block_3(x, integration_time)
         x = self.non_linearity(self.conv_down_3_4(x_scale3))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -347,8 +325,6 @@ class ResUNetODE(BaseNetwork):
                                       align_corners=False)
 
         x_scale4 = self.conv_down_4(x)
-        if use_ode:
-            x = self.ode_block_4(x, integration_time)
         x = self.non_linearity(self.conv_down_4_embed(x_scale4))
         x = nn.functional.interpolate(x,
                                       scale_factor=0.5,
@@ -395,6 +371,238 @@ class ResUNetODE(BaseNetwork):
         output = self.out_layer(x)
 
         return output
+
+
+class ShallowResUNetODE(BaseNetwork):
+
+    def __init__(self,
+                 device: torch.device = torch.device('cpu'),
+                 num_filters: int = 16,
+                 in_channels: int = 3,
+                 out_channels: int = 3,
+                 non_linearity: str = 'relu'):
+        '''
+        A Residual U-Net model with ODE.
+
+        Parameters
+        ----------
+        device: torch.device
+        num_filters : int
+            Number of convolutional filters.
+        in_channels: int
+            Number of input image channels.
+        out_channels: int
+            Number of output image channels.
+        non_linearity : string
+            One of 'relu' and 'softplus'
+        '''
+        super(ShallowResUNetODE, self).__init__()
+
+        self.device = device
+        self.in_channels = in_channels
+        self.non_linearity_str = non_linearity
+        if self.non_linearity_str == 'relu':
+            self.non_linearity = nn.ReLU(inplace=True)
+        elif self.non_linearity_str == 'softplus':
+            self.non_linearity = nn.Softplus()
+
+        n_f = num_filters  # shorthand
+
+        self.conv1x1 = nn.Conv2d(in_channels, n_f, 1, 1)
+        self.conv_down_1 = ResConvBlock(n_f)
+        self.conv_down_1_embed = nn.Conv2d(n_f, n_f * 2, 1, 1)
+
+        self.block_embedding = ResConvBlock(n_f * 2)
+
+        self.conv_up_embed_1 = nn.Conv2d(n_f * 2 + n_f, n_f, 1, 1)
+        self.conv_up_1 = ResUpConvBlock(n_f)
+
+        self.out_layer = nn.Conv2d(n_f, out_channels, 1)
+
+        self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 2))
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        '''
+        `interpolate` is used as a drop-in replacement for MaxPool2d.
+
+        Time embedding through ODE.
+        '''
+
+        assert x.shape[0] == 1
+
+        # Skip ODE if no time difference.
+        use_ode = t.item() != 0
+        if use_ode:
+            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
+
+        x = self.non_linearity(self.conv1x1(x))
+
+        x_scale1 = self.conv_down_1(x)
+        x = self.non_linearity(self.conv_down_1_embed(x_scale1))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = self.block_embedding(x)
+
+        if use_ode:
+            x = self.ode_block_embedding(x, integration_time)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+        x = torch.cat((x, x_scale1), dim=1)
+        x = self.non_linearity(self.conv_up_embed_1(x))
+        x = self.conv_up_1(x)
+
+        output = self.out_layer(x)
+
+        return output
+
+
+class ResAutoEncoderODE(BaseNetwork):
+
+    def __init__(self,
+                 device: torch.device = torch.device('cpu'),
+                 num_filters: int = 16,
+                 in_channels: int = 3,
+                 out_channels: int = 3,
+                 non_linearity: str = 'relu'):
+        '''
+        A Residual AutoEncoder model with ODE.
+
+        Parameters
+        ----------
+        device: torch.device
+        num_filters : int
+            Number of convolutional filters.
+        in_channels: int
+            Number of input image channels.
+        out_channels: int
+            Number of output image channels.
+        non_linearity : string
+            One of 'relu' and 'softplus'
+        '''
+        super(ResAutoEncoderODE, self).__init__()
+
+        self.device = device
+        self.in_channels = in_channels
+        self.non_linearity_str = non_linearity
+        if self.non_linearity_str == 'relu':
+            self.non_linearity = nn.ReLU(inplace=True)
+        elif self.non_linearity_str == 'softplus':
+            self.non_linearity = nn.Softplus()
+
+        n_f = num_filters  # shorthand
+
+        self.conv1x1 = nn.Conv2d(in_channels, n_f, 1, 1)
+        self.conv_down_1 = ResConvBlock(n_f)
+        self.conv_down_1_2 = nn.Conv2d(n_f, n_f * 2, 1, 1)
+        self.conv_down_2 = ResConvBlock(n_f * 2)
+        self.conv_down_2_3 = nn.Conv2d(n_f * 2, n_f * 4, 1, 1)
+        self.conv_down_3 = ResConvBlock(n_f * 4)
+        self.conv_down_3_4 = nn.Conv2d(n_f * 4, n_f * 8, 1, 1)
+        self.conv_down_4 = ResConvBlock(n_f * 8)
+        self.conv_down_4_embed = nn.Conv2d(n_f * 8, n_f * 16, 1, 1)
+
+        self.block_embedding = ResConvBlock(n_f * 16)
+
+        self.conv_up_embed_4 = nn.Conv2d(n_f * 16, n_f * 8, 1, 1)
+        self.conv_up_4 = ResUpConvBlock(n_f * 8)
+        self.conv_up_4_3 = nn.Conv2d(n_f * 8, n_f * 4, 1, 1)
+        self.conv_up_3 = ResUpConvBlock(n_f * 4)
+        self.conv_up_3_2 = nn.Conv2d(n_f * 4, n_f * 2, 1, 1)
+        self.conv_up_2 = ResUpConvBlock(n_f * 2)
+        self.conv_up_2_1 = nn.Conv2d(n_f * 2, n_f, 1, 1)
+        self.conv_up_1 = ResUpConvBlock(n_f)
+
+        self.out_layer = nn.Conv2d(n_f, out_channels, 1)
+
+        self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
+        '''
+        `interpolate` is used as a drop-in replacement for MaxPool2d.
+
+        Time embedding through ODE.
+        '''
+
+        assert x.shape[0] == 1
+
+        # Skip ODE if no time difference.
+        use_ode = t.item() != 0
+        if use_ode:
+            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
+
+        x = self.non_linearity(self.conv1x1(x))
+
+        x = self.conv_down_1(x)
+        x = self.non_linearity(self.conv_down_1_2(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = self.conv_down_2(x)
+        x = self.non_linearity(self.conv_down_2_3(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = self.conv_down_3(x)
+        x = self.non_linearity(self.conv_down_3_4(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = self.conv_down_4(x)
+        x = self.non_linearity(self.conv_down_4_embed(x))
+        x = nn.functional.interpolate(x,
+                                      scale_factor=0.5,
+                                      mode='bilinear',
+                                      align_corners=False)
+
+        x = self.block_embedding(x)
+
+        if use_ode:
+            x = self.ode_block_embedding(x, integration_time)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+        x = self.non_linearity(self.conv_up_embed_4(x))
+        x = self.conv_up_4(x)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+        x = self.non_linearity(self.conv_up_4_3(x))
+        x = self.conv_up_3(x)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+        x = self.non_linearity(self.conv_up_3_2(x))
+        x = self.conv_up_2(x)
+
+        x = nn.functional.interpolate(x,
+                                      scale_factor=2,
+                                      mode='bilinear',
+                                      align_corners=False)
+        x = self.non_linearity(self.conv_up_2_1(x))
+        x = self.conv_up_1(x)
+
+        output = self.out_layer(x)
+
+        return output
+
 
 
 class ConvBlock(nn.Module):

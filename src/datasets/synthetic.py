@@ -9,41 +9,26 @@ import numpy as np
 from torch.utils.data import Dataset
 
 
-class RetinaDataset(Dataset):
+class SyntheticDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/',
-                 image_folder: str = 'AREDS_2014_images_512x512/',
-                 target_dim: Tuple[int] = (512, 512)):
+                 base_path: str = '../../data/synthesized/',
+                 image_folder: str = 'base/',
+                 target_dim: Tuple[int] = (256, 256)):
         '''
-        Information regarding the dataset.
-
-        Files are named in the following format:
-            `ID visitNo F2 laterality.jpg`
-
-            ID: patient identification (5 digits)
-            visitNo: 00, 02, 04, etc (each visit represents 6 months interval)
-            laterality: LE LS = left eye; RE RS = right eye.
-
-        The special thing here is that different patients may have different number of visits.
-        - If a patient has fewer than 2 visits, we ignore the patient.
-        - When a patient's index is queried, we return images from all visits of that patient.
-        - We need to be extra cautious that the data is split on the patient level rather than image pair level.
-
         NOTE: since different patients may have different number of visits, the returned array will
         not necessarily be of the same shape. Due to the concatenation requirements, we can only
         set batch size to 1 in the downstream Dataloader.
         '''
-        super(RetinaDataset, self).__init__()
+        super().__init__()
 
         self.target_dim = target_dim
-        all_image_folders = sorted(glob('%s/%s/*/' %
-                                        (base_path, image_folder)))
+        all_image_folders = sorted(glob('%s/%s/*/' % (base_path, image_folder)))
 
         self.image_by_patient = []
 
         for folder in all_image_folders:
-            paths = sorted(glob('%s/*.jpg' % (folder)))
+            paths = sorted(glob('%s/*.png' % (folder)))
             if len(paths) >= 2:
                 self.image_by_patient.append(paths)
 
@@ -55,26 +40,26 @@ class RetinaDataset(Dataset):
         return 3
 
 
-class RetinaSubset(RetinaDataset):
+class SyntheticSubset(SyntheticDataset):
 
     def __init__(self,
-                 main_dataset: RetinaDataset = None,
+                 main_dataset: SyntheticDataset = None,
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs',
                                               'array']):
         '''
-        A subset of RetinaDataset.
+        A subset of SyntheticDataset.
 
-        In RetinaDataset, we carefully isolated the (variable number of) images from
+        In SyntheticDataset, we carefully isolated the (variable number of) images from
         different patients, and in train/val/test split we split the data by
         patient rather than by image.
 
-        Now we have 3 instances of RetinaSubset, one for each train/val/test set.
+        Now we have 3 instances of SyntheticSubset, one for each train/val/test set.
         In each set, we can safely unpack the images out.
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
         '''
-        super(RetinaSubset, self).__init__()
+        super().__init__()
 
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format
@@ -157,8 +142,8 @@ def load_image(path: str, target_dim: Tuple[int] = None) -> np.array:
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
-    time = path.split()[1]
-    # Shall be 2 or 3 digits
-    assert len(time) in [2, 3]
+    time = path.split('time_')[1].replace('.png', '')
+    # Shall be 3 digits
+    assert len(time) == 3
     time = float(time)
     return time

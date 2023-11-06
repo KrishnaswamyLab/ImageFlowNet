@@ -1,6 +1,7 @@
 from data_utils.extend import ExtendedDataset
 from data_utils.split import split_indices
 from datasets.retina import RetinaDataset, RetinaSubset
+from datasets.synthetic import SyntheticDataset, SyntheticSubset
 from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
 
@@ -10,6 +11,12 @@ def prepare_dataset(config: AttributeHashmap):
     if config.dataset_name == 'retina':
         dataset = RetinaDataset(base_path=config.dataset_path,
                                 target_dim=config.target_dim)
+        Subset = RetinaSubset
+    elif config.dataset_name == 'synthetic':
+        dataset = SyntheticDataset(base_path=config.dataset_path,
+                                   image_folder=config.image_folder,
+                                   target_dim=config.target_dim)
+        Subset = SyntheticSubset
     else:
         raise ValueError(
             'Dataset not found. Check `dataset_name` in config yaml file.')
@@ -20,18 +27,18 @@ def prepare_dataset(config: AttributeHashmap):
     ratios = [float(c) for c in config.train_val_test_ratio.split(':')]
     ratios = tuple([c / sum(ratios) for c in ratios])
     indices = list(range(len(dataset)))
-    train_indices, val_indices, test_indices = split_indices(
-        indices=indices, splits=ratios, random_seed=config.random_seed)
+    train_indices, val_indices, test_indices = \
+        split_indices(indices=indices, splits=ratios, random_seed=config.random_seed)
 
-    train_set = RetinaSubset(retina_dataset=dataset,
-                             subset_indices=train_indices,
-                             return_format=config.return_format)
-    val_set = RetinaSubset(retina_dataset=dataset,
-                           subset_indices=val_indices,
-                           return_format='all_pairs')
-    test_set = RetinaSubset(retina_dataset=dataset,
-                            subset_indices=test_indices,
-                            return_format='all_pairs')
+    train_set = Subset(main_dataset=dataset,
+                       subset_indices=train_indices,
+                       return_format=config.return_format)
+    val_set = Subset(main_dataset=dataset,
+                     subset_indices=val_indices,
+                     return_format='all_pairs')
+    test_set = Subset(main_dataset=dataset,
+                      subset_indices=test_indices,
+                      return_format='all_pairs')
 
     min_batch_per_epoch = 5
     desired_len = max(len(train_set), min_batch_per_epoch)
