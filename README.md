@@ -22,6 +22,21 @@ python -m pip install timm
 python -m pip install opencv-python
 ```
 
+## Usage
+1. Experiments on synthetic data.
+First, we have a strong intuition that:
+    - ODE-AE will work if disease progression is the only variable in the image, while in non-disease regions we have pixel-perfect spatial alignment.
+    - ODE-AE will work if, even though we don't have pixel-perfect alignment in non-disease regions, the spatial transformation is well-defined and only depend on time.
+    - ODE-AE will NOT work if, the spatial transformation is random and chaotic.
+
+To verify this, we train ODE-AE on 3 synthetic datasets.
+```
+1. `./data/synthesized/base/`: non-disease regions are not moving.
+2. `./data/synthesized/rotation/`: non-disease regions are rotated, and the rotation only depends on time.
+3. `./data/synthesized/mixing/`: non-disease regions are transformed, and the transformation is chaotic.
+```
+
+
 <!-- ```
 conda create --name mip python==3.8
 conda activate mip
@@ -58,11 +73,11 @@ export LD_LIBRARY_PATH=/PATH_TO_MY_CONDA_ENV/.conda_envs/mip-i2sb/lib:$LD_LIBRAR
 
 <!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
 
-## Usage
+<!-- ## Usage
 ```
 python train.py --cond-x1 --log-writer wandb --wandb-api-key a8e550aa2ec6835c2890425e63b466a8b46c01ab --wandb-user cl2482
 ```
 
 
 ## Acknowledgements
-Codebase heavily adapted from [I^2SB: Image-to-Image Schrodinger Bridge](https://github.com/NVlabs/I2SB)
+Codebase heavily adapted from [I^2SB: Image-to-Image Schrodinger Bridge](https://github.com/NVlabs/I2SB) -->
