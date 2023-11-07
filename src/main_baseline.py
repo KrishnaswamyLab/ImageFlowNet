@@ -9,7 +9,7 @@ from data_utils.prepare_dataset import prepare_dataset
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
 from nn.unet import UNet, ResUNet
-from nn.unet_ode import UNetODE, ResUNetODE, ShallowResUNetODE, ResAutoEncoderODE
+from nn.unet_ode import UNetODE, ResUNetODE, ShallowResUNetODE, AutoEncoderODE
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
@@ -27,6 +27,7 @@ def train(config: AttributeHashmap):
     # Build the model
     try:
         model = globals()[config.model](num_filters=config.num_filters,
+                                        depth=config.depth,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel)
     except:
@@ -47,6 +48,10 @@ def train(config: AttributeHashmap):
 
     loss_fn = torch.nn.MSELoss()
     best_val_psnr = 0
+
+    save_folder_fig_log = '%s/log/' % config.output_save_path
+    os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
+    os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0
@@ -70,6 +75,7 @@ def train(config: AttributeHashmap):
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
+            assert torch.diff(t_list).item() > 0
             x_start_pred = model(x=x_end, t=-torch.diff(t_list))
             x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
@@ -104,6 +110,11 @@ def train(config: AttributeHashmap):
             train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
                 xT_true, xT_pred) / 2
 
+            if iter_idx == 10:
+                save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
+                    save_folder_fig_log, str(epoch_idx).zfill(5))
+                plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+
             # Simulate `config.batch_size` by batched optimizer update.
             loss.backward()
             if iter_idx % config.batch_size == 0:
@@ -127,7 +138,7 @@ def train(config: AttributeHashmap):
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         model.eval()
         with torch.no_grad():
-            for (images, timestamps) in tqdm(val_set):
+            for iter_idx, (images, timestamps) in tqdm(enumerate(val_set)):
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
 
@@ -174,6 +185,11 @@ def train(config: AttributeHashmap):
                 val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
                     xT_true, xT_pred) / 2
 
+                if iter_idx == 10:
+                    save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
+                        save_folder_fig_log, str(epoch_idx).zfill(5))
+                    plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+
         val_recon_psnr = val_recon_psnr / len(val_set.dataset)
         val_recon_ssim = val_recon_ssim / len(val_set.dataset)
         val_pred_psnr = val_pred_psnr / len(val_set.dataset)
@@ -211,6 +227,7 @@ def test(config: AttributeHashmap):
     # Build the model
     try:
         model = globals()[config.model](num_filters=config.num_filters,
+                                        depth=config.depth,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel)
     except:
@@ -308,44 +325,7 @@ def test(config: AttributeHashmap):
         if iter_idx < 20:
             save_path_fig_sbs = '%s/figure_%s.png' % (
                 os.path.dirname(save_path_fig_summary), str(iter_idx).zfill(5))
-            fig_sbs = plt.figure(figsize=(12, 10))
-
-            ax = fig_sbs.add_subplot(2, 3, 1)
-            ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
-            ax.set_title('GT, time: %s' % t_list[0].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-            ax = fig_sbs.add_subplot(2, 3, 4)
-            ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
-            ax.set_title('GT, time: %s' % t_list[1].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-
-            ax = fig_sbs.add_subplot(2, 3, 2)
-            ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
-            ax.set_title('Recon, time: %s' % t_list[0].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-            ax = fig_sbs.add_subplot(2, 3, 5)
-            ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
-            ax.set_title('Recon, time: %s' % t_list[1].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-
-            ax = fig_sbs.add_subplot(2, 3, 3)
-            ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
-            ax.set_title('Pred, input time: %s' % t_list[1].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-            ax = fig_sbs.add_subplot(2, 3, 6)
-            ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
-            ax.set_title('Pred, input time: %s' % t_list[0].item())
-            ax.set_axis_off()
-            ax.set_aspect(768 / 512)
-
-            fig_sbs.tight_layout()
-            fig_sbs.savefig(save_path_fig_sbs)
-            plt.close(fig=fig_sbs)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
     test_loss = test_loss / len(test_set.dataset)
     test_recon_psnr = test_recon_psnr / len(test_set.dataset)
@@ -358,6 +338,49 @@ def test(config: AttributeHashmap):
            test_pred_ssim),
         filepath=config.log_dir,
         to_console=True)
+    return
+
+def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
+    fig_sbs = plt.figure(figsize=(12, 10))
+
+    aspect_ratio = x0_true[0] / x0_true[1]
+
+    ax = fig_sbs.add_subplot(2, 3, 1)
+    ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
+    ax.set_title('GT, time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 3, 4)
+    ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
+    ax.set_title('GT, time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 3, 2)
+    ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
+    ax.set_title('Recon, time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 3, 5)
+    ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
+    ax.set_title('Recon, time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 3, 3)
+    ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
+    ax.set_title('Pred, input time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 3, 6)
+    ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
+    ax.set_title('Pred, input time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    fig_sbs.tight_layout()
+    fig_sbs.savefig(save_path)
+    plt.close(fig=fig_sbs)
     return
 
 

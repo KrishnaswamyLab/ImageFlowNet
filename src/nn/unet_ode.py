@@ -462,16 +462,18 @@ class ShallowResUNetODE(BaseNetwork):
         return output
 
 
-class ResAutoEncoderODE(BaseNetwork):
+class AutoEncoderODE(BaseNetwork):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
                  num_filters: int = 16,
+                 depth: int = 5,
+                 use_residual: bool = False,
                  in_channels: int = 3,
                  out_channels: int = 3,
                  non_linearity: str = 'relu'):
         '''
-        A Residual AutoEncoder model with ODE.
+        An AutoEncoder model with ODE.
 
         Parameters
         ----------
@@ -485,9 +487,11 @@ class ResAutoEncoderODE(BaseNetwork):
         non_linearity : string
             One of 'relu' and 'softplus'
         '''
-        super(ResAutoEncoderODE, self).__init__()
+        super().__init__()
 
         self.device = device
+        self.depth = depth
+        self.use_residual = use_residual
         self.in_channels = in_channels
         self.non_linearity_str = non_linearity
         if self.non_linearity_str == 'relu':
@@ -498,29 +502,32 @@ class ResAutoEncoderODE(BaseNetwork):
         n_f = num_filters  # shorthand
 
         self.conv1x1 = nn.Conv2d(in_channels, n_f, 1, 1)
-        self.conv_down_1 = ResConvBlock(n_f)
-        self.conv_down_1_2 = nn.Conv2d(n_f, n_f * 2, 1, 1)
-        self.conv_down_2 = ResConvBlock(n_f * 2)
-        self.conv_down_2_3 = nn.Conv2d(n_f * 2, n_f * 4, 1, 1)
-        self.conv_down_3 = ResConvBlock(n_f * 4)
-        self.conv_down_3_4 = nn.Conv2d(n_f * 4, n_f * 8, 1, 1)
-        self.conv_down_4 = ResConvBlock(n_f * 8)
-        self.conv_down_4_embed = nn.Conv2d(n_f * 8, n_f * 16, 1, 1)
 
-        self.block_embedding = ResConvBlock(n_f * 16)
+        self.down_list = nn.ModuleList([])
+        self.down_conn_list = nn.ModuleList([])
+        self.up_list = nn.ModuleList([])
+        self.up_conn_list = nn.ModuleList([])
 
-        self.conv_up_embed_4 = nn.Conv2d(n_f * 16, n_f * 8, 1, 1)
-        self.conv_up_4 = ResUpConvBlock(n_f * 8)
-        self.conv_up_4_3 = nn.Conv2d(n_f * 8, n_f * 4, 1, 1)
-        self.conv_up_3 = ResUpConvBlock(n_f * 4)
-        self.conv_up_3_2 = nn.Conv2d(n_f * 4, n_f * 2, 1, 1)
-        self.conv_up_2 = ResUpConvBlock(n_f * 2)
-        self.conv_up_2_1 = nn.Conv2d(n_f * 2, n_f, 1, 1)
-        self.conv_up_1 = ResUpConvBlock(n_f)
+        if self.use_residual:
+            conv_block = ResConvBlock
+            upconv_block = ResUpConvBlock
+        else:
+            conv_block = ConvBlock
+            upconv_block = UpConvBlock
 
+        for d in range(self.depth):
+            self.down_list.append(conv_block(n_f * 2 ** d))
+            self.down_conn_list.append(nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1))
+            self.up_conn_list.append(nn.Conv2d(n_f * 2 ** (d + 1), n_f * 2 ** d, 1, 1))
+            self.up_list.append(upconv_block(n_f * 2 ** d))
+
+        self.up_list = self.up_list[::-1]
+        self.up_conn_list = self.up_conn_list[::-1]
+
+        self.bottleneck = ResConvBlock(n_f * 2 ** self.depth)
+        self.ode_bottleneck = ODEBlock(ODEfunc(dim=n_f * 2 ** self.depth))
         self.out_layer = nn.Conv2d(n_f, out_channels, 1)
 
-        self.ode_block_embedding = ODEBlock(ODEfunc(dim=n_f * 16))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
@@ -538,66 +545,25 @@ class ResAutoEncoderODE(BaseNetwork):
 
         x = self.non_linearity(self.conv1x1(x))
 
-        x = self.conv_down_1(x)
-        x = self.non_linearity(self.conv_down_1_2(x))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x = self.conv_down_2(x)
-        x = self.non_linearity(self.conv_down_2_3(x))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x = self.conv_down_3(x)
-        x = self.non_linearity(self.conv_down_3_4(x))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x = self.conv_down_4(x)
-        x = self.non_linearity(self.conv_down_4_embed(x))
-        x = nn.functional.interpolate(x,
-                                      scale_factor=0.5,
-                                      mode='bilinear',
-                                      align_corners=False)
-
-        x = self.block_embedding(x)
+        for d in range(self.depth):
+            x = self.down_list[d](x)
+            x = self.non_linearity(self.down_conn_list[d](x))
+            x = nn.functional.interpolate(x,
+                                          scale_factor=0.5,
+                                          mode='bilinear',
+                                          align_corners=False)
+        x = self.bottleneck(x)
 
         if use_ode:
-            x = self.ode_block_embedding(x, integration_time)
+            x = self.ode_bottleneck(x, integration_time)
 
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = self.non_linearity(self.conv_up_embed_4(x))
-        x = self.conv_up_4(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = self.non_linearity(self.conv_up_4_3(x))
-        x = self.conv_up_3(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = self.non_linearity(self.conv_up_3_2(x))
-        x = self.conv_up_2(x)
-
-        x = nn.functional.interpolate(x,
-                                      scale_factor=2,
-                                      mode='bilinear',
-                                      align_corners=False)
-        x = self.non_linearity(self.conv_up_2_1(x))
-        x = self.conv_up_1(x)
+        for d in range(self.depth):
+            x = nn.functional.interpolate(x,
+                                          scale_factor=2,
+                                          mode='bilinear',
+                                          align_corners=False)
+            x = self.non_linearity(self.up_conn_list[d](x))
+            x = self.up_list[d](x)
 
         output = self.out_layer(x)
 
