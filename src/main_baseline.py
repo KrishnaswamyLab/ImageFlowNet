@@ -343,7 +343,7 @@ def test(config: AttributeHashmap):
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
     fig_sbs = plt.figure(figsize=(12, 10))
 
-    aspect_ratio = x0_true[0] / x0_true[1]
+    aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
     ax = fig_sbs.add_subplot(2, 3, 1)
     ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
