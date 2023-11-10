@@ -1,5 +1,4 @@
 import itertools
-import os
 from typing import Literal
 from glob import glob
 from typing import List, Tuple
@@ -9,7 +8,7 @@ import numpy as np
 from torch.utils.data import Dataset
 
 
-class RetinaDataset(Dataset):
+class RetinaUCSFDataset(Dataset):
 
     def __init__(self,
                  base_path: str = '../../data/',
@@ -34,7 +33,7 @@ class RetinaDataset(Dataset):
         not necessarily be of the same shape. Due to the concatenation requirements, we can only
         set batch size to 1 in the downstream Dataloader.
         '''
-        super(RetinaDataset, self).__init__()
+        super().__init__()
 
         self.target_dim = target_dim
         all_image_folders = sorted(glob('%s/%s/*/' %
@@ -55,17 +54,17 @@ class RetinaDataset(Dataset):
         return 3
 
 
-class RetinaSubset(RetinaDataset):
+class RetinaAREDSSubset(RetinaAREDSDataset):
 
     def __init__(self,
-                 main_dataset: RetinaDataset = None,
+                 main_dataset: RetinaAREDSDataset = None,
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs',
                                               'array']):
         '''
-        A subset of RetinaDataset.
+        A subset of RetinaAREDSDataset.
 
-        In RetinaDataset, we carefully isolated the (variable number of) images from
+        In RetinaAREDSDataset, we carefully isolated the (variable number of) images from
         different patients, and in train/val/test split we split the data by
         patient rather than by image.
 
@@ -74,7 +73,7 @@ class RetinaSubset(RetinaDataset):
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
         '''
-        super(RetinaSubset, self).__init__()
+        super(RetinaAREDSSubset, self).__init__()
 
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format

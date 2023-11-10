@@ -1,6 +1,6 @@
 from data_utils.extend import ExtendedDataset
 from data_utils.split import split_indices
-from datasets.retina import RetinaDataset, RetinaSubset
+from datasets.retina_areds import RetinaAREDSDataset, RetinaAREDSSubset
 from datasets.synthetic import SyntheticDataset, SyntheticSubset
 from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
@@ -8,10 +8,10 @@ from utils.attribute_hashmap import AttributeHashmap
 
 def prepare_dataset(config: AttributeHashmap):
     # Read dataset.
-    if config.dataset_name == 'retina':
-        dataset = RetinaDataset(base_path=config.dataset_path,
+    if config.dataset_name == 'retina_areds':
+        dataset = RetinaAREDSDataset(base_path=config.dataset_path,
                                 target_dim=config.target_dim)
-        Subset = RetinaSubset
+        Subset = RetinaAREDSSubset
     elif config.dataset_name == 'synthetic':
         dataset = SyntheticDataset(base_path=config.dataset_path,
                                    image_folder=config.image_folder,
