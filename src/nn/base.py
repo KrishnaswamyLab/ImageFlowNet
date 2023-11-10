@@ -11,7 +11,7 @@ class BaseNetwork(torch.nn.Module):
         super(BaseNetwork, self).__init__()
         pass
 
-    def forward(self, *args):
+    def forward(self, *args, **kwargs):
         pass
 
     def save_weights(self, model_save_path: str) -> None:
