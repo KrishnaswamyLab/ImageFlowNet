@@ -69,7 +69,7 @@ class AutoEncoder(BaseNetwork):
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.bottleneck = ResConvBlock(n_f * 2 ** self.depth)
+        self.bottleneck = conv_block(n_f * 2 ** self.depth)
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
 
 

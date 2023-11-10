@@ -69,7 +69,7 @@ class T_AutoEncoder(BaseNetwork):
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.bottleneck = ResConvBlock(n_f * 2 ** self.depth)
+        self.bottleneck = conv_block(n_f * 2 ** self.depth)
         self.time_embed_dim = n_f * 2 ** self.depth
         self.time_embed = torch.nn.Sequential(
             torch.torch.nn.Linear(self.time_embed_dim, self.time_embed_dim),
