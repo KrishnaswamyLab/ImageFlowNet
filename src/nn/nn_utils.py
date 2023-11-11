@@ -57,17 +57,21 @@ class ConvBlock(torch.nn.Module):
         super(ConvBlock, self).__init__()
         self.conv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), torch.nn.InstanceNorm2d(num_filters),
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True),
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True))
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, x):
         return self.conv(x)
@@ -79,17 +83,21 @@ class ResConvBlock(torch.nn.Module):
         super(ResConvBlock, self).__init__()
         self.conv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), torch.nn.InstanceNorm2d(num_filters),
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True),
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True))
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, x):
         return self.conv(x) + x
@@ -101,17 +109,21 @@ class UpConvBlock(torch.nn.Module):
         super(UpConvBlock, self).__init__()
         self.upconv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), torch.nn.InstanceNorm2d(num_filters),
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True),
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True))
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, x):
         return self.upconv(x)
@@ -123,17 +135,21 @@ class ResUpConvBlock(torch.nn.Module):
         super(ResUpConvBlock, self).__init__()
         self.upconv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True), torch.nn.InstanceNorm2d(num_filters),
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True),
             torch.nn.Conv2d(num_filters,
-                      num_filters,
-                      kernel_size=3,
-                      stride=1,
-                      padding=1,
-                      bias=True))
+                            num_filters,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                            bias=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, x):
         return self.upconv(x) + x

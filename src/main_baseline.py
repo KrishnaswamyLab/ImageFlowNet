@@ -124,7 +124,7 @@ def train(config: AttributeHashmap):
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         model.eval()
         with torch.no_grad():
-            for iter_idx, (images, timestamps) in tqdm(enumerate(val_set)):
+            for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
 

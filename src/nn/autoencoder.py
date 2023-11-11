@@ -1,4 +1,5 @@
 from .base import BaseNetwork
+from .common_encoder import Encoder
 from .nn_utils import ConvBlock, UpConvBlock, ResConvBlock, ResUpConvBlock
 import torch
 

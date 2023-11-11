@@ -108,19 +108,21 @@ def train(config: AttributeHashmap):
                 convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
             # NOTE: Optimize auxiliary network.
-            cls_logit_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1])
-            cls_logit_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1])
-            cls_logit_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1])
+            cls_logit_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
+            cls_logit_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
+            cls_logit_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
 
             ones = torch.ones(images.shape[0], device=device)
             zeros = torch.zeros(images.shape[0], device=device)
-            loss_aux = bce_loss(cls_logit_pos.view(-1), ones) + \
-                bce_loss(cls_logit_neg1.view(-1), zeros) + bce_loss(cls_logit_neg2.view(-1), zeros)
+            loss_aux = bce_loss(cls_logit_pos, ones) + \
+                bce_loss(cls_logit_neg1, zeros) + bce_loss(cls_logit_neg2, zeros)
+
             train_loss_aux += loss_aux.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
             loss_aux.backward()
             if iter_idx % config.batch_size == 0:
+                torch.nn.utils.clip_grad_norm_(model_aux.parameters(), 0.1)
                 optimizer_aux.step()
                 optimizer_aux.zero_grad()
 
@@ -132,11 +134,12 @@ def train(config: AttributeHashmap):
             x_start_pred = model(x=x_end, t=-torch.diff(t_list))
             x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
-            loss_recon = mse_loss(x_start, x_start_recon) + \
-                mse_loss(x_end, x_end_recon)
-            loss_pred = bce_loss(model_aux.forward_cls(x_start, x_start_pred).view(-1), ones) + \
-                        bce_loss(model_aux.forward_cls(x_end, x_end_pred).view(-1), ones)
+            loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+            cls_logit_pos1 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
+            cls_logit_pos2 = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+            loss_pred = bce_loss(cls_logit_pos1, ones) + bce_loss(cls_logit_pos2, ones)
             loss = loss_recon + loss_pred
+
             train_loss += loss.item()
             train_loss_recon += loss_recon.item()
             train_loss_pred += loss_pred.item()
@@ -182,7 +185,7 @@ def train(config: AttributeHashmap):
         model.eval()
         model_aux.eval()
         with torch.no_grad():
-            for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in tqdm(enumerate(val_set)):
+            for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in enumerate(tqdm(val_set)):
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
                 assert images.shape[1] == 2
@@ -203,10 +206,11 @@ def train(config: AttributeHashmap):
                 x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                     numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
-                loss_recon = mse_loss(x_start, x_start_recon) + \
-                    mse_loss(x_end, x_end_recon)
-                loss_pred = bce_loss(model_aux.forward_cls(x_start, x_start_pred).view(-1), ones) + \
-                            bce_loss(model_aux.forward_cls(x_end, x_end_pred).view(-1), ones)
+                loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+                cls_logit_pos1 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
+                cls_logit_pos2 = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+                loss_pred = bce_loss(cls_logit_pos1, ones) + bce_loss(cls_logit_pos2, ones)
+
                 loss = loss_recon + loss_pred
                 val_loss += loss.item()
                 val_loss_recon += loss_recon.item()
