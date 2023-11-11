@@ -22,3 +22,20 @@ class BaseNetwork(torch.nn.Module):
     def load_weights(self, model_save_path: str, device: torch.device) -> None:
         self.load_state_dict(torch.load(model_save_path, map_location=device))
         return
+
+    def init_params(self):
+        '''
+        Parameter initialization.
+        '''
+        for m in self.modules():
+            if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.ConvTranspose2d):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_in')
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)
+            elif isinstance(m, torch.nn.BatchNorm2d):
+                torch.nn.init.constant_(m.weight, 1)
+                torch.nn.init.constant_(m.bias, 0)
+            elif isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, std=1e-3)
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)

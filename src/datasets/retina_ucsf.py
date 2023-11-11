@@ -1,3 +1,8 @@
+'''
+Work in progress
+'''
+
+
 import itertools
 from typing import Literal
 from glob import glob

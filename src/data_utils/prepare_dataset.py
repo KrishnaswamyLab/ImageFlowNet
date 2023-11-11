@@ -32,13 +32,16 @@ def prepare_dataset(config: AttributeHashmap):
 
     train_set = Subset(main_dataset=dataset,
                        subset_indices=train_indices,
-                       return_format=config.return_format)
+                       return_format=config.return_format,
+                       pos_neg_pairs=config.pos_neg_pairs)
     val_set = Subset(main_dataset=dataset,
                      subset_indices=val_indices,
-                     return_format='all_pairs')
+                     return_format='all_pairs',
+                     pos_neg_pairs=config.pos_neg_pairs)
     test_set = Subset(main_dataset=dataset,
                       subset_indices=test_indices,
-                      return_format='all_pairs')
+                      return_format='all_pairs',
+                      pos_neg_pairs=config.pos_neg_pairs)
 
     min_batch_per_epoch = 5
     desired_len = max(len(train_set), min_batch_per_epoch)

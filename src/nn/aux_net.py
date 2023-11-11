@@ -11,7 +11,7 @@ class AuxNet(BaseNetwork):
                  depth: int = 5,
                  use_residual: bool = False,
                  in_channels: int = 3,
-                 out_channels: int = 3,
+                 out_channels: int = 1,
                  non_linearity: str = 'relu'):
         '''
         Auxiliary Network that performs discrimination and segmentation.
@@ -112,9 +112,10 @@ class AuxNet(BaseNetwork):
             x = self.non_linearity(self.up_conn_list[d](x))
             x = self.up_list[d](x)
 
-        output = self.seg_head(x)
+        for module in self.seg_head:
+            x = module(x)
 
-        return output
+        return x
 
     def forward_cls(self, x1: torch.Tensor, x2: torch.Tensor):
         '''
@@ -142,9 +143,11 @@ class AuxNet(BaseNetwork):
         x2 = self.bottleneck(x2)
 
         x = torch.cat([x1, x2], dim=1)
-        output = self.cls_head(x)
 
-        return output
+        for module in self.cls_head:
+            x = module(x)
+
+        return x
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError('Please use `forward_seg` or `forward_cls` instead.')

@@ -35,6 +35,7 @@ def train(config: AttributeHashmap):
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)
+    model.init_params()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     lr_scheduler = LinearWarmupCosineAnnealingLR(
@@ -69,9 +70,9 @@ def train(config: AttributeHashmap):
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
 
-            x_start = images[:, 0, ...].type(torch.FloatTensor).to(device)
-            x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
-            t_list = timestamps[0].type(torch.FloatTensor).to(device)
+            x_start = images[:, 0, ...].float().to(device)
+            x_end = images[:, 1, ...].float().to(device)
+            t_list = timestamps[0].float().to(device)
 
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -145,9 +146,9 @@ def train(config: AttributeHashmap):
 
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
-                x_start = images[:, 0, ...].type(torch.FloatTensor).to(device)
-                x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
-                t_list = timestamps[0].type(torch.FloatTensor).to(device)
+                x_start = images[:, 0, ...].float().to(device)
+                x_end = images[:, 1, ...].float().to(device)
+                t_list = timestamps[0].float().to(device)
 
                 x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
                 x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -253,9 +254,9 @@ def test(config: AttributeHashmap):
         assert images.shape[1] == 2
         assert timestamps.shape[1] == 2
 
-        x_start = images[:, 0, ...].type(torch.FloatTensor).to(device)
-        x_end = images[:, 1, ...].type(torch.FloatTensor).to(device)
-        t_list = timestamps[0].type(torch.FloatTensor).to(device)
+        x_start = images[:, 0, ...].float().to(device)
+        x_end = images[:, 1, ...].float().to(device)
+        t_list = timestamps[0].float().to(device)
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
