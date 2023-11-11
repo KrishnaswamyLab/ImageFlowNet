@@ -82,7 +82,9 @@ class AuxNet(BaseNetwork):
             conv_block(n_f * 2 ** (self.depth + 1)),
             conv_block(n_f * 2 ** (self.depth + 1)),
             torch.nn.AdaptiveAvgPool2d((1, 1)),
-            torch.nn.Linear(n_f * 2 ** (self.depth + 1), 1)
+            torch.nn.Flatten(),
+            torch.nn.Linear(n_f * 2 ** (self.depth + 1), 1),
+            torch.nn.Sigmoid(),
         ])
 
     def forward_seg(self, x: torch.Tensor):

@@ -1,5 +1,11 @@
-import argparse
+'''
+In this version, we use a main network to perform longitudinal prediction,
+and an auxiliary network to
 
+'''
+
+import argparse
+from typing import Tuple, List
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -11,6 +17,7 @@ from tqdm import tqdm
 from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
+from nn.aux_net import AuxNet
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
@@ -29,37 +36,56 @@ def train(config: AttributeHashmap):
     try:
         model = globals()[config.model](num_filters=config.num_filters,
                                         depth=config.depth,
+                                        use_residual=config.use_residual,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
+    model_aux = AuxNet(num_filters=config.num_filters,
+                       depth=config.depth,
+                       use_residual=config.use_residual,
+                       in_channels=num_image_channel,
+                       out_channels=1)
+
     model.to(device)
+    model_aux.to(device)
+
     model.init_params()
+    model_aux.init_params()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer_aux = torch.optim.AdamW(model_aux.parameters(), lr=config.learning_rate)
     lr_scheduler = LinearWarmupCosineAnnealingLR(
         optimizer=optimizer,
         warmup_epochs=10,
         warmup_start_lr=float(config.learning_rate) / 100,
         max_epochs=config.max_epochs,
         eta_min=0)
-    early_stopper = EarlyStopping(mode='max',
+    lr_scheduler_aux = LinearWarmupCosineAnnealingLR(
+        optimizer=optimizer_aux,
+        warmup_epochs=10,
+        warmup_start_lr=float(config.learning_rate) / 100,
+        max_epochs=config.max_epochs,
+        eta_min=0)
+    early_stopper = EarlyStopping(mode='min',
                                   patience=config.patience,
                                   percentage=False)
 
-    loss_fn = torch.nn.MSELoss()
-    best_val_psnr = 0
+    mse_loss = torch.nn.MSELoss()
+    bce_loss = torch.nn.BCELoss()
+    best_val_loss = np.inf
 
     save_folder_fig_log = '%s/log/' % config.output_save_path
     os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
     os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
-        train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0
+        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
+            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0
         model.train()
         optimizer.zero_grad()
-        for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
+        for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in enumerate(tqdm(train_set)):
             # NOTE: batch size is set to 1,
             # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
             # while different patients have different [t_start, t_end] in our dataset.
@@ -69,11 +95,31 @@ def train(config: AttributeHashmap):
             # timestamps: [1, 2], containing [t_start, t_end]
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
+            assert pos_pair.shape[1] == 2
+            assert neg_pair1.shape[1] == 2
+            assert neg_pair2.shape[1] == 2
 
-            x_start = images[:, 0, ...].float().to(device)
-            x_end = images[:, 1, ...].float().to(device)
-            t_list = timestamps[0].float().to(device)
+            x_start, x_end, t_list, pos_pair, neg_pair1, neg_pair2 = \
+                convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
+            # Optimize auxiliary network.
+            cls_logit_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1])
+            cls_logit_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1])
+            cls_logit_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1])
+
+            ones = torch.ones(images.shape[0], device=device)
+            zeros = torch.zeros(images.shape[0], device=device)
+            loss_aux = bce_loss(cls_logit_pos.view(-1), ones) + \
+                bce_loss(cls_logit_neg1.view(-1), zeros) + bce_loss(cls_logit_neg2.view(-1), zeros)
+            train_loss_aux += loss_aux.item()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            loss_aux.backward()
+            if iter_idx % config.batch_size == 0:
+                optimizer_aux.step()
+                optimizer_aux.zero_grad()
+
+            # Optimize main network.
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
@@ -81,41 +127,14 @@ def train(config: AttributeHashmap):
             x_start_pred = model(x=x_end, t=-torch.diff(t_list))
             x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
-            loss_recon = loss_fn(x_start, x_start_recon) + loss_fn(
-                x_end, x_end_recon)
-            loss_pred = loss_fn(x_start, x_start_pred) + loss_fn(
-                x_end, x_end_pred)
-
+            loss_recon = mse_loss(x_start, x_start_recon) + \
+                mse_loss(x_end, x_end_recon)
+            loss_pred = bce_loss(model_aux.forward_cls(x_start, x_start_pred).view(-1), ones) + \
+                        bce_loss(model_aux.forward_cls(x_end, x_end_pred).view(-1), ones)
             loss = loss_recon + loss_pred
             train_loss += loss.item()
-
-            x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            x0_recon = x_start_recon.cpu().detach().numpy().squeeze(
-                0).transpose(1, 2, 0)
-            x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-
-            xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-
-            train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
-                xT_true, xT_recon) / 2
-            train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(
-                xT_true, xT_recon) / 2
-            train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(
-                xT_true, xT_pred) / 2
-            train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
-                xT_true, xT_pred) / 2
-
-            if iter_idx == 10:
-                save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
-                    save_folder_fig_log, str(epoch_idx).zfill(5))
-                plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+            train_loss_recon += loss_recon.item()
+            train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
             loss.backward()
@@ -123,32 +142,47 @@ def train(config: AttributeHashmap):
                 optimizer.step()
                 optimizer.zero_grad()
 
-        train_loss = train_loss / len(train_set.dataset)
-        train_recon_psnr = train_recon_psnr / len(train_set.dataset)
-        train_recon_ssim = train_recon_ssim / len(train_set.dataset)
-        train_pred_psnr = train_pred_psnr / len(train_set.dataset)
-        train_pred_ssim = train_pred_ssim / len(train_set.dataset)
+            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+
+            train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+            train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+            train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+            train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+
+            if iter_idx == 10:
+                save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
+                    save_folder_fig_log, str(epoch_idx).zfill(5))
+                plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+
+        for metric in ['train_loss', 'train_loss_aux', 'train_loss_recon', 'train_loss_pred', 'train_recon_psnr', 'train_recon_ssim', 'train_pred_psnr', 'train_pred_ssim']:
+            locals()[metric] = locals()[metric] / len(train_set.dataset)
 
         lr_scheduler.step()
+        lr_scheduler_aux.step()
 
-        log('Train [%s/%s] loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, train_loss, train_recon_psnr,
-               train_recon_ssim, train_pred_psnr, train_pred_ssim),
+        log('Train [%s/%s] loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+            % (epoch_idx + 1, config.max_epochs, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
+               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim),
             filepath=config.log_dir,
             to_console=False)
 
-        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
+        val_loss, val_loss_recon, val_loss_pred, \
+            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0, 0, 0, 0
         model.eval()
+        model_aux.eval()
         with torch.no_grad():
-            for iter_idx, (images, timestamps) in tqdm(enumerate(val_set)):
-                assert images.shape[1] == 2
-                assert timestamps.shape[1] == 2
-
+            for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in tqdm(enumerate(val_set)):
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
-                x_start = images[:, 0, ...].float().to(device)
-                x_end = images[:, 1, ...].float().to(device)
-                t_list = timestamps[0].float().to(device)
+                assert images.shape[1] == 2
+                assert timestamps.shape[1] == 2
+                assert pos_pair.shape[1] == 2
+                assert neg_pair1.shape[1] == 2
+                assert neg_pair2.shape[1] == 2
+
+                x_start, x_end, t_list, pos_pair, neg_pair1, neg_pair2 = \
+                    convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
                 x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
                 x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -156,54 +190,46 @@ def train(config: AttributeHashmap):
                 x_start_pred = model(x=x_end, t=-torch.diff(t_list))
                 x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
-                x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(
-                    1, 2, 0)
-                x0_recon = x_start_recon.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
-                x0_pred = x_start_pred.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
+                x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+                    numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
-                xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
-                    1, 2, 0)
-                xT_recon = x_end_recon.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
-                xT_pred = x_end_pred.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
+                loss_recon = mse_loss(x_start, x_start_recon) + \
+                    mse_loss(x_end, x_end_recon)
+                loss_pred = bce_loss(model_aux.forward_cls(x_start, x_start_pred).view(-1), ones) + \
+                            bce_loss(model_aux.forward_cls(x_end, x_end_pred).view(-1), ones)
+                loss = loss_recon + loss_pred
+                val_loss += loss.item()
+                val_loss_recon += loss_recon.item()
+                val_loss_pred += loss_pred.item()
 
-                val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
-                    xT_true, xT_recon) / 2
-                val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(
-                    xT_true, xT_recon) / 2
-                val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(
-                    xT_true, xT_pred) / 2
-                val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
-                    xT_true, xT_pred) / 2
+                val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+                val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+                val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+                val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
                         save_folder_fig_log, str(epoch_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-        val_recon_psnr = val_recon_psnr / len(val_set.dataset)
-        val_recon_ssim = val_recon_ssim / len(val_set.dataset)
-        val_pred_psnr = val_pred_psnr / len(val_set.dataset)
-        val_pred_ssim = val_pred_ssim / len(val_set.dataset)
+        for metric in ['val_loss', 'val_loss_recon', 'val_loss_pred', \
+            'val_recon_psnr', 'val_recon_ssim', 'val_pred_psnr', 'val_pred_ssim']:
+            locals()[metric] = locals()[metric] / len(val_set.dataset)
 
-        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-               val_recon_ssim, val_pred_psnr, val_pred_ssim),
+        log('Validation [%s/%s] loss: %.3f [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+            % (epoch_idx + 1, config.max_epochs, val_loss, val_loss_recon, val_loss_pred,
+               val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim),
             filepath=config.log_dir,
             to_console=False)
 
-        val_psnr = (val_recon_psnr + val_pred_psnr) / 2
-        if val_psnr > best_val_psnr:
-            best_val_psnr = val_psnr
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             model.save_weights(config.model_save_path)
             log('%s: Model weights successfully saved.' % config.model,
                 filepath=config.log_dir,
                 to_console=False)
 
-        if early_stopper.step(val_psnr):
+        if early_stopper.step(val_loss):
             log('Early stopping criterion met. Ending training.',
                 filepath=config.log_dir,
                 to_console=True)
@@ -333,6 +359,45 @@ def test(config: AttributeHashmap):
         filepath=config.log_dir,
         to_console=True)
     return
+
+
+def convert_variables(images: torch.Tensor,
+                      timestamps: torch.Tensor,
+                      pos_pair: torch.Tensor,
+                      neg_pair1: torch.Tensor,
+                      neg_pair2: torch.Tensor,
+                      device: torch.device) -> Tuple[torch.Tensor]:
+    '''
+    Some repetitive processing of variables.
+    '''
+    x_start = images[:, 0, ...].float().to(device)
+    x_end = images[:, 1, ...].float().to(device)
+    t_list = timestamps[0].float().to(device)
+    pos_pair = [pos_pair[:, 0, ...].float().to(device), pos_pair[:, 1, ...].float().to(device)]
+    neg_pair1 = [neg_pair1[:, 0, ...].float().to(device), neg_pair1[:, 1, ...].float().to(device)]
+    neg_pair2 = [neg_pair2[:, 0, ...].float().to(device), neg_pair2[:, 1, ...].float().to(device)]
+    return x_start, x_end, t_list, pos_pair, neg_pair1, neg_pair2
+
+
+def numpy_variables(x_start: torch.Tensor,
+                    x_start_recon: torch.Tensor,
+                    x_start_pred: torch.Tensor,
+                    x_end: torch.Tensor,
+                    x_end_recon: torch.Tensor,
+                    x_end_pred: torch.Tensor) -> Tuple[np.array]:
+    '''
+    Some repetitive numpy casting of variables.
+    '''
+    x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+
+    xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+
+    return x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred
+
 
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
     fig_sbs = plt.figure(figsize=(12, 10))
