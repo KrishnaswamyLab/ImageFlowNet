@@ -1,6 +1,8 @@
+import torch
+
 from .base import BaseNetwork
 from .nn_utils import ConvBlock, UpConvBlock, ResConvBlock, ResUpConvBlock, ODEfunc, ODEBlock
-import torch
+from .common_encoder import Encoder
 
 
 class AuxNet(BaseNetwork):
@@ -46,8 +48,6 @@ class AuxNet(BaseNetwork):
 
         n_f = num_filters  # shorthand
 
-        self.conv1x1 = torch.nn.Conv2d(in_channels, n_f, 1, 1)
-
         if self.use_residual:
             conv_block = ResConvBlock
             upconv_block = ResUpConvBlock
@@ -56,13 +56,11 @@ class AuxNet(BaseNetwork):
             upconv_block = UpConvBlock
 
         # This is for the encoder.
-        self.down_list = torch.nn.ModuleList([])
-        self.down_conn_list = torch.nn.ModuleList([])
-        for d in range(self.depth):
-            self.down_list.append(conv_block(n_f * 2 ** d))
-            self.down_conn_list.append(torch.nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1))
-
-        self.bottleneck = conv_block(n_f * 2 ** self.depth)
+        self.encoder = Encoder(in_channels=in_channels,
+                               n_f=n_f,
+                               depth=self.depth,
+                               conv_block=conv_block,
+                               non_linearity=self.non_linearity)
 
         # This is for the segmentation head.
         self.up_list = torch.nn.ModuleList([])
@@ -72,6 +70,7 @@ class AuxNet(BaseNetwork):
             self.up_list.append(upconv_block(n_f * 2 ** d))
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
+
         self.seg_head = torch.nn.ModuleList([
             torch.nn.Conv2d(n_f, out_channels, 1),
             torch.nn.Sigmoid(),
@@ -92,18 +91,7 @@ class AuxNet(BaseNetwork):
         Forward through the segmentation path.
         '''
 
-        x = self.non_linearity(self.conv1x1(x))
-
-        residual_list = []
-        for d in range(self.depth):
-            residual_list.append(x.copy())
-            x = self.down_list[d](x)
-            x = self.non_linearity(self.down_conn_list[d](x))
-            x = torch.nn.functional.interpolate(x,
-                                                scale_factor=0.5,
-                                                mode='bilinear',
-                                                align_corners=False)
-        x = self.bottleneck(x)
+        x, residual_list = self.encoder(x)
 
         for d in range(self.depth):
             x = torch.nn.functional.interpolate(x,
@@ -124,26 +112,8 @@ class AuxNet(BaseNetwork):
         Forward through the classification path.
         '''
 
-        x1 = self.non_linearity(self.conv1x1(x1))
-        for d in range(self.depth):
-            x1 = self.down_list[d](x1)
-            x1 = self.non_linearity(self.down_conn_list[d](x1))
-            x1 = torch.nn.functional.interpolate(x1,
-                                                 scale_factor=0.5,
-                                                 mode='bilinear',
-                                                 align_corners=False)
-        x1 = self.bottleneck(x1)
-
-        x2 = self.non_linearity(self.conv1x1(x2))
-        for d in range(self.depth):
-            x2 = self.down_list[d](x2)
-            x2 = self.non_linearity(self.down_conn_list[d](x2))
-            x2 = torch.nn.functional.interpolate(x2,
-                                                 scale_factor=0.5,
-                                                 mode='bilinear',
-                                                 align_corners=False)
-        x2 = self.bottleneck(x2)
-
+        x1, _ = self.encoder(x1)
+        x2, _ = self.encoder(x2)
         x = torch.cat([x1, x2], dim=1)
 
         for module in self.cls_head:

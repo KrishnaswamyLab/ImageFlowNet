@@ -1,5 +1,6 @@
 from .base import BaseNetwork
 from .nn_utils import ConvBlock, UpConvBlock, ResConvBlock, ResUpConvBlock, ODEfunc, ODEBlock
+from .common_encoder import Encoder
 import torch
 
 
@@ -46,13 +47,6 @@ class ODEAutoEncoder(BaseNetwork):
 
         n_f = num_filters  # shorthand
 
-        self.conv1x1 = torch.nn.Conv2d(in_channels, n_f, 1, 1)
-
-        self.down_list = torch.nn.ModuleList([])
-        self.down_conn_list = torch.nn.ModuleList([])
-        self.up_list = torch.nn.ModuleList([])
-        self.up_conn_list = torch.nn.ModuleList([])
-
         if self.use_residual:
             conv_block = ResConvBlock
             upconv_block = ResUpConvBlock
@@ -60,16 +54,22 @@ class ODEAutoEncoder(BaseNetwork):
             conv_block = ConvBlock
             upconv_block = UpConvBlock
 
+        # This is for the encoder.
+        self.encoder = Encoder(in_channels=in_channels,
+                               n_f=n_f,
+                               depth=self.depth,
+                               conv_block=conv_block,
+                               non_linearity=self.non_linearity)
+
+        # This is for the decoder.
+        self.up_list = torch.nn.ModuleList([])
+        self.up_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
-            self.down_list.append(conv_block(n_f * 2 ** d))
-            self.down_conn_list.append(torch.nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1))
             self.up_conn_list.append(torch.nn.Conv2d(n_f * 2 ** (d + 1), n_f * 2 ** d, 1, 1))
             self.up_list.append(upconv_block(n_f * 2 ** d))
-
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.bottleneck = conv_block(n_f * 2 ** self.depth)
         self.ode_bottleneck = ODEBlock(ODEfunc(dim=n_f * 2 ** self.depth))
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
 
@@ -88,16 +88,7 @@ class ODEAutoEncoder(BaseNetwork):
         if use_ode:
             integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
-        x = self.non_linearity(self.conv1x1(x))
-
-        for d in range(self.depth):
-            x = self.down_list[d](x)
-            x = self.non_linearity(self.down_conn_list[d](x))
-            x = torch.nn.functional.interpolate(x,
-                                          scale_factor=0.5,
-                                          mode='bilinear',
-                                          align_corners=False)
-        x = self.bottleneck(x)
+        x, _ = self.encoder(x)
 
         if use_ode:
             x = self.ode_bottleneck(x, integration_time)

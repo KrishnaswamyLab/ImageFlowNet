@@ -1,5 +1,5 @@
 import argparse
-
+from typing import Tuple
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -70,9 +70,7 @@ def train(config: AttributeHashmap):
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
 
-            x_start = images[:, 0, ...].float().to(device)
-            x_end = images[:, 1, ...].float().to(device)
-            t_list = timestamps[0].float().to(device)
+            x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -89,19 +87,8 @@ def train(config: AttributeHashmap):
             loss = loss_recon + loss_pred
             train_loss += loss.item()
 
-            x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            x0_recon = x_start_recon.cpu().detach().numpy().squeeze(
-                0).transpose(1, 2, 0)
-            x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-
-            xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
-            xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(
-                1, 2, 0)
+            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
             train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
                 xT_true, xT_recon) / 2
@@ -123,11 +110,8 @@ def train(config: AttributeHashmap):
                 optimizer.step()
                 optimizer.zero_grad()
 
-        train_loss = train_loss / len(train_set.dataset)
-        train_recon_psnr = train_recon_psnr / len(train_set.dataset)
-        train_recon_ssim = train_recon_ssim / len(train_set.dataset)
-        train_pred_psnr = train_pred_psnr / len(train_set.dataset)
-        train_pred_ssim = train_pred_ssim / len(train_set.dataset)
+        train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
+            [item / len(train_set.dataset) for item in (train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
         lr_scheduler.step()
 
@@ -146,9 +130,7 @@ def train(config: AttributeHashmap):
 
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
-                x_start = images[:, 0, ...].float().to(device)
-                x_end = images[:, 1, ...].float().to(device)
-                t_list = timestamps[0].float().to(device)
+                x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
                 x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
                 x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -156,19 +138,8 @@ def train(config: AttributeHashmap):
                 x_start_pred = model(x=x_end, t=-torch.diff(t_list))
                 x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
-                x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(
-                    1, 2, 0)
-                x0_recon = x_start_recon.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
-                x0_pred = x_start_pred.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
-
-                xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(
-                    1, 2, 0)
-                xT_recon = x_end_recon.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
-                xT_pred = x_end_pred.cpu().detach().numpy().squeeze(
-                    0).transpose(1, 2, 0)
+                x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+                    numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
                 val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
                     xT_true, xT_recon) / 2
@@ -184,10 +155,8 @@ def train(config: AttributeHashmap):
                         save_folder_fig_log, str(epoch_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-        val_recon_psnr = val_recon_psnr / len(val_set.dataset)
-        val_recon_ssim = val_recon_ssim / len(val_set.dataset)
-        val_pred_psnr = val_pred_psnr / len(val_set.dataset)
-        val_pred_ssim = val_pred_ssim / len(val_set.dataset)
+        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = \
+            [item / len(val_set.dataset) for item in (val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim)]
 
         log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
             % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
@@ -246,9 +215,7 @@ def test(config: AttributeHashmap):
         assert images.shape[1] == 2
         assert timestamps.shape[1] == 2
 
-        x_start = images[:, 0, ...].float().to(device)
-        x_end = images[:, 1, ...].float().to(device)
-        t_list = timestamps[0].float().to(device)
+        x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -263,17 +230,8 @@ def test(config: AttributeHashmap):
         loss = loss_recon + loss_pred
         test_loss += loss.item()
 
-        x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-        x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-        x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-
-        xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-        xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-        xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
+        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
         test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
             xT_true, xT_recon) / 2
@@ -334,6 +292,39 @@ def test(config: AttributeHashmap):
         to_console=True)
     return
 
+
+def convert_variables(images: torch.Tensor,
+                      timestamps: torch.Tensor,
+                      device: torch.device) -> Tuple[torch.Tensor]:
+    '''
+    Some repetitive processing of variables.
+    '''
+    x_start = images[:, 0, ...].float().to(device)
+    x_end = images[:, 1, ...].float().to(device)
+    t_list = timestamps[0].float().to(device)
+    return x_start, x_end, t_list
+
+
+def numpy_variables(x_start: torch.Tensor,
+                    x_start_recon: torch.Tensor,
+                    x_start_pred: torch.Tensor,
+                    x_end: torch.Tensor,
+                    x_end_recon: torch.Tensor,
+                    x_end_pred: torch.Tensor) -> Tuple[np.array]:
+    '''
+    Some repetitive numpy casting of variables.
+    '''
+    x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+
+    xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+    xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
+
+    return x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred
+
+
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
     fig_sbs = plt.figure(figsize=(12, 10))
 
@@ -380,7 +371,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Entry point.')
-    parser.add_argument('--mode', help='`train` or `test`?', required=True)
+    parser.add_argument('--mode', help='`train` or `test`?', default='train')
     parser.add_argument('--gpu-id', help='Index of GPU device', default=0)
     parser.add_argument('--config',
                         help='Path to config yaml file.',

@@ -5,7 +5,7 @@ and an auxiliary network to
 '''
 
 import argparse
-from typing import Tuple, List
+from typing import Tuple
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -53,6 +53,11 @@ def train(config: AttributeHashmap):
 
     model.init_params()
     model_aux.init_params()
+
+    if config.share_weight_main:
+        # Freeze the encoder of the auxiliary network,
+        # and share its weight from the main network encoder.
+        model_aux.encoder.freeze_weights()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     optimizer_aux = torch.optim.AdamW(model_aux.parameters(), lr=config.learning_rate)
@@ -102,7 +107,7 @@ def train(config: AttributeHashmap):
             x_start, x_end, t_list, pos_pair, neg_pair1, neg_pair2 = \
                 convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
-            # Optimize auxiliary network.
+            # NOTE: Optimize auxiliary network.
             cls_logit_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1])
             cls_logit_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1])
             cls_logit_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1])
@@ -119,7 +124,7 @@ def train(config: AttributeHashmap):
                 optimizer_aux.step()
                 optimizer_aux.zero_grad()
 
-            # Optimize main network.
+            # NOTE: Optimize main network.
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
@@ -142,6 +147,11 @@ def train(config: AttributeHashmap):
                 optimizer.step()
                 optimizer.zero_grad()
 
+            if config.share_weight_main:
+                # Freeze the encoder of the auxiliary network,
+                # and share its weight from the main network encoder.
+                model_aux.encoder.copy_weights(model.encoder)
+
             x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                 numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
@@ -155,8 +165,8 @@ def train(config: AttributeHashmap):
                     save_folder_fig_log, str(epoch_idx).zfill(5))
                 plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-        for metric in ['train_loss', 'train_loss_aux', 'train_loss_recon', 'train_loss_pred', 'train_recon_psnr', 'train_recon_ssim', 'train_pred_psnr', 'train_pred_ssim']:
-            locals()[metric] = locals()[metric] / len(train_set.dataset)
+        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
+            [item / len(train_set.dataset) for item in (train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
@@ -212,9 +222,8 @@ def train(config: AttributeHashmap):
                         save_folder_fig_log, str(epoch_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-        for metric in ['val_loss', 'val_loss_recon', 'val_loss_pred', \
-            'val_recon_psnr', 'val_recon_ssim', 'val_pred_psnr', 'val_pred_ssim']:
-            locals()[metric] = locals()[metric] / len(val_set.dataset)
+        val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = \
+            [item / len(val_set.dataset) for item in (val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim)]
 
         log('Validation [%s/%s] loss: %.3f [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
             % (epoch_idx + 1, config.max_epochs, val_loss, val_loss_recon, val_loss_pred,
@@ -237,6 +246,9 @@ def train(config: AttributeHashmap):
     return
 
 
+#
+#TODO: test is not updated yet.
+#
 @torch.no_grad()
 def test(config: AttributeHashmap):
     device = torch.device(
@@ -289,17 +301,8 @@ def test(config: AttributeHashmap):
         loss = loss_recon + loss_pred
         test_loss += loss.item()
 
-        x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-        x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-        x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-
-        xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-        xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
-        xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(
-            1, 2, 0)
+        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
         test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
             xT_true, xT_recon) / 2
@@ -445,7 +448,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Entry point.')
-    parser.add_argument('--mode', help='`train` or `test`?', required=True)
+    parser.add_argument('--mode', help='`train` or `test`?', default='train')
     parser.add_argument('--gpu-id', help='Index of GPU device', default=0)
     parser.add_argument('--config',
                         help='Path to config yaml file.',
