@@ -9,11 +9,13 @@ class Encoder(BaseNetwork):
                  n_f: int,
                  depth: int,
                  conv_block: torch.nn.Module,
-                 non_linearity: torch.nn.Module):
+                 non_linearity: torch.nn.Module,
+                 bilinear: bool = False):
         super().__init__()
 
         self.depth = depth
         self.non_linearity = non_linearity
+        self.bilinear = bilinear
 
         self.conv1x1 = torch.nn.Conv2d(in_channels, n_f, 1, 1)
         self.down_list = torch.nn.ModuleList([])
@@ -24,6 +26,9 @@ class Encoder(BaseNetwork):
 
         self.bottleneck = conv_block(n_f * 2 ** self.depth)
 
+        if not self.bilinear:
+            self.pooling = torch.nn.MaxPool2d(2)
+
     def forward(self, x: torch.Tensor):
         x = self.non_linearity(self.conv1x1(x))
 
@@ -32,10 +37,14 @@ class Encoder(BaseNetwork):
             residual_list.append(x.clone())
             x = self.down_list[d](x)
             x = self.non_linearity(self.down_conn_list[d](x))
-            x = torch.nn.functional.interpolate(x,
-                                                scale_factor=0.5,
-                                                mode='bilinear',
-                                                align_corners=False)
+            if self.bilinear:
+                x = torch.nn.functional.interpolate(x,
+                                                    scale_factor=0.5,
+                                                    mode='bilinear',
+                                                    align_corners=False)
+            else:
+                x = self.pooling(x)
+
         x = self.bottleneck(x)
 
         return x, residual_list

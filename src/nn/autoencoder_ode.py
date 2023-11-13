@@ -1,5 +1,5 @@
 from .base import BaseNetwork
-from .nn_utils import ConvBlock, UpConvBlock, ResConvBlock, ResUpConvBlock, ODEfunc, ODEBlock
+from .nn_utils import ConvBlock, ResConvBlock, ODEfunc, ODEBlock
 from .common_encoder import Encoder
 import torch
 
@@ -49,10 +49,10 @@ class ODEAutoEncoder(BaseNetwork):
 
         if self.use_residual:
             conv_block = ResConvBlock
-            upconv_block = ResUpConvBlock
+            upconv_block = ResConvBlock
         else:
             conv_block = ConvBlock
-            upconv_block = UpConvBlock
+            upconv_block = ConvBlock
 
         # This is for the encoder.
         self.encoder = Encoder(in_channels=in_channels,
@@ -76,8 +76,6 @@ class ODEAutoEncoder(BaseNetwork):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
-        `interpolate` is used as a drop-in replacement for MaxPool2d.
-
         Time embedding through ODE.
         '''
 
@@ -95,9 +93,9 @@ class ODEAutoEncoder(BaseNetwork):
 
         for d in range(self.depth):
             x = torch.nn.functional.interpolate(x,
-                                          scale_factor=2,
-                                          mode='bilinear',
-                                          align_corners=False)
+                                                scale_factor=2,
+                                                mode='bilinear',
+                                                align_corners=False)
             x = self.non_linearity(self.up_conn_list[d](x))
             x = self.up_list[d](x)
 

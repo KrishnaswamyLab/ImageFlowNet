@@ -17,6 +17,7 @@ from tqdm import tqdm
 from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
+from nn.unet_ode import ODEUNet
 from nn.aux_net import AuxNet
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping

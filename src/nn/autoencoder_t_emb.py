@@ -1,5 +1,5 @@
 from .base import BaseNetwork
-from .nn_utils import ConvBlock, UpConvBlock, ResConvBlock, ResUpConvBlock, timestep_embedding
+from .nn_utils import ConvBlock, ResConvBlock, timestep_embedding
 from .common_encoder import Encoder
 import torch
 
@@ -49,10 +49,10 @@ class T_AutoEncoder(BaseNetwork):
 
         if self.use_residual:
             conv_block = ResConvBlock
-            upconv_block = ResUpConvBlock
+            upconv_block = ResConvBlock
         else:
             conv_block = ConvBlock
-            upconv_block = UpConvBlock
+            upconv_block = ConvBlock
 
         # This is for the encoder.
         self.encoder = Encoder(in_channels=in_channels,
@@ -81,8 +81,6 @@ class T_AutoEncoder(BaseNetwork):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
-        `interpolate` is used as a drop-in replacement for MaxPool2d.
-
         Time embedding through sinusoidal embedding.
         '''
 

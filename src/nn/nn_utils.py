@@ -6,9 +6,9 @@ from torchdiffeq import odeint
 class ODEfunc(torch.nn.Module):
 
     def __init__(self, dim):
-        super(ODEfunc, self).__init__()
-        self.norm1 = torch.nn.GroupNorm(min(32, dim), dim)
+        super().__init__()
         self.relu = torch.nn.ReLU(inplace=True)
+        self.norm1 = torch.nn.GroupNorm(min(32, dim), dim)
         self.conv1 = ConcatConv2d(dim, dim, 3, 1, 1)
         self.norm2 = torch.nn.GroupNorm(min(32, dim), dim)
         self.conv2 = ConcatConv2d(dim, dim, 3, 1, 1)
@@ -30,7 +30,7 @@ class ODEfunc(torch.nn.Module):
 class ODEBlock(torch.nn.Module):
 
     def __init__(self, odefunc, tolerance: float = 1e-3):
-        super(ODEBlock, self).__init__()
+        super().__init__()
         self.odefunc = odefunc
         self.tolerance = tolerance
 
@@ -53,8 +53,8 @@ class ODEBlock(torch.nn.Module):
 
 class ConvBlock(torch.nn.Module):
 
-    def __init__(self, num_filters):
-        super(ConvBlock, self).__init__()
+    def __init__(self, num_filters: int):
+        super().__init__()
         self.conv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
                             num_filters,
@@ -79,8 +79,8 @@ class ConvBlock(torch.nn.Module):
 
 class ResConvBlock(torch.nn.Module):
 
-    def __init__(self, num_filters):
-        super(ResConvBlock, self).__init__()
+    def __init__(self, num_filters: int):
+        super().__init__()
         self.conv = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters,
                             num_filters,
@@ -103,56 +103,30 @@ class ResConvBlock(torch.nn.Module):
         return self.conv(x) + x
 
 
-class UpConvBlock(torch.nn.Module):
+class ConvBlockUpdateChannel(torch.nn.Module):
 
-    def __init__(self, num_filters):
-        super(UpConvBlock, self).__init__()
-        self.upconv = torch.nn.Sequential(
-            torch.nn.Conv2d(num_filters,
-                            num_filters,
+    def __init__(self, num_filters_in: int, num_filters_out: int):
+        super().__init__()
+        self.conv_uc = torch.nn.Sequential(
+            torch.nn.Conv2d(num_filters_in,
+                            num_filters_in,
                             kernel_size=3,
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.InstanceNorm2d(num_filters_in),
             torch.nn.LeakyReLU(0.2, inplace=True),
-            torch.nn.Conv2d(num_filters,
-                            num_filters,
+            torch.nn.Conv2d(num_filters_in,
+                            num_filters_out,
                             kernel_size=3,
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.InstanceNorm2d(num_filters_out),
             torch.nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, x):
-        return self.upconv(x)
-
-
-class ResUpConvBlock(torch.nn.Module):
-
-    def __init__(self, num_filters):
-        super(ResUpConvBlock, self).__init__()
-        self.upconv = torch.nn.Sequential(
-            torch.nn.Conv2d(num_filters,
-                            num_filters,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=True),
-            torch.nn.InstanceNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True),
-            torch.nn.Conv2d(num_filters,
-                            num_filters,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=True),
-            torch.nn.InstanceNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True))
-
-    def forward(self, x):
-        return self.upconv(x) + x
+        return self.conv_uc(x)
 
 
 class ConcatConv2d(torch.nn.Module):
