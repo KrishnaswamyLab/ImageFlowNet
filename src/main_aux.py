@@ -90,11 +90,10 @@ def train(config: AttributeHashmap):
     for epoch_idx in tqdm(range(config.max_epochs)):
         running_stage1 = epoch_idx < config.epochs_stage1
 
+        train_loss, train_loss_aux, num_correct, num_total, train_loss_recon, train_loss_pred, \
+            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         model.train()
         model_aux.train()
-
-        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
-            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0
         optimizer.zero_grad()
         optimizer_aux.zero_grad()
 
@@ -125,6 +124,8 @@ def train(config: AttributeHashmap):
             cls_prob_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
             loss_aux = 2 * bce_loss(cls_prob_pos, ones) + \
                 bce_loss(cls_prob_neg1, zeros) + bce_loss(cls_prob_neg2, zeros)
+            num_correct += (cls_prob_pos > 0.5) * 2 + (cls_prob_neg1 < 0.5) + (cls_prob_neg2 < 0.5)
+            num_total += 4
 
             train_loss_aux += loss_aux.item()
 
@@ -166,10 +167,8 @@ def train(config: AttributeHashmap):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, \
-                posA, posB, neg1A, neg1B, neg2A, neg2B = \
-                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                                pos_pair[0], pos_pair[1], neg_pair1[0], neg_pair1[1], neg_pair2[0], neg_pair2[1])
+            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
             train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
             train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
@@ -179,6 +178,8 @@ def train(config: AttributeHashmap):
             if shall_plot:
                 save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
                     save_folder_fig_log, str(epoch_idx).zfill(5))
+                posA, posB, neg1A, neg1B, neg2A, neg2B = \
+                    numpy_variables(pos_pair[0], pos_pair[1], neg_pair1[0], neg_pair1[1], neg_pair2[0], neg_pair2[1])
                 plot_side_by_side(t_list, save_path_fig_sbs,
                                   x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
                                   posA, posB, neg1A, neg1B, neg2A, neg2B,
@@ -186,13 +187,14 @@ def train(config: AttributeHashmap):
 
         train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
             [item / len(train_set.dataset) for item in (train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        train_aux_acc = num_correct / num_total * 100
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
 
-        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux Acc: %.3f'
             % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
-               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim),
+               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, train_aux_acc),
             filepath=config.log_dir,
             to_console=False)
 
@@ -252,6 +254,8 @@ def train(config: AttributeHashmap):
                 if shall_plot:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
                         save_folder_fig_log, str(epoch_idx).zfill(5))
+                    posA, posB, neg1A, neg1B, neg2A, neg2B = \
+                        numpy_variables(pos_pair[0], pos_pair[1], neg_pair1[0], neg_pair1[1], neg_pair2[0], neg_pair2[1])
                     plot_side_by_side(t_list, save_path_fig_sbs,
                                       x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
                                       posA, posB, neg1A, neg1B, neg2A, neg2B,
