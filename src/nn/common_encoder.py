@@ -10,7 +10,7 @@ class Encoder(BaseNetwork):
                  depth: int,
                  conv_block: torch.nn.Module,
                  non_linearity: torch.nn.Module,
-                 bilinear: bool = False):
+                 bilinear: bool = True):
         super().__init__()
 
         self.depth = depth
@@ -34,8 +34,8 @@ class Encoder(BaseNetwork):
 
         residual_list = []
         for d in range(self.depth):
-            residual_list.append(x.clone())
             x = self.down_list[d](x)
+            residual_list.append(x.clone())
             x = self.non_linearity(self.down_conn_list[d](x))
             if self.bilinear:
                 x = torch.nn.functional.interpolate(x,

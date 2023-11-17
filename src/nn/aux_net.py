@@ -78,8 +78,7 @@ class AuxNet(BaseNetwork):
 
         # This is for the classification head
         self.cls_head = torch.nn.ModuleList([
-            ConvBlockUpdateChannel(n_f * 2 ** (self.depth + 1), n_f * 2 ** ((self.depth + 1) // 2)),
-            ConvBlockUpdateChannel(n_f * 2 ** ((self.depth + 1) // 2), n_f),
+            ConvBlockUpdateChannel(n_f * 2 ** (self.depth + 1), n_f),
             torch.nn.AdaptiveAvgPool2d((1, 1)),
             torch.nn.Flatten(),
             torch.nn.Linear(n_f, 1),

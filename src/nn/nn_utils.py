@@ -109,14 +109,6 @@ class ConvBlockUpdateChannel(torch.nn.Module):
         super().__init__()
         self.conv_uc = torch.nn.Sequential(
             torch.nn.Conv2d(num_filters_in,
-                            num_filters_in,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=True),
-            torch.nn.InstanceNorm2d(num_filters_in),
-            torch.nn.LeakyReLU(0.2, inplace=True),
-            torch.nn.Conv2d(num_filters_in,
                             num_filters_out,
                             kernel_size=3,
                             stride=1,

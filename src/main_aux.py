@@ -5,7 +5,7 @@ and an auxiliary network to
 '''
 
 import argparse
-from typing import Tuple
+from typing import Tuple, List
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -26,7 +26,13 @@ from utils.metrics import psnr, ssim
 from utils.parse import parse_settings
 from utils.seed import seed_everything
 
-
+# NOTE: The current training logic is:
+# The training comes with 2 stages.
+# In the first stage, the main network is trained with pixel-level losses,
+# for both reconstruction and longitudinal prediction.
+# In the second stage, the main network is trained with pixel-level loss for reconstruction
+# but with auxiliary-network guidance on longitudinal prediction.
+# In both stages, the auxiliary network is trained to perform classification.
 def train(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
@@ -55,11 +61,6 @@ def train(config: AttributeHashmap):
     model.init_params()
     model_aux.init_params()
 
-    if config.share_weight_main:
-        # Freeze the encoder of the auxiliary network,
-        # and share its weight from the main network encoder.
-        model_aux.encoder.freeze_weights()
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     optimizer_aux = torch.optim.AdamW(model_aux.parameters(), lr=config.learning_rate)
     lr_scheduler = LinearWarmupCosineAnnealingLR(
@@ -87,11 +88,19 @@ def train(config: AttributeHashmap):
     os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
+        running_stage1 = epoch_idx < config.epochs_stage1
+
+        model.train()
+        model_aux.train()
+
         train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
             train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0
-        model.train()
         optimizer.zero_grad()
+        optimizer_aux.zero_grad()
+
         for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in enumerate(tqdm(train_set)):
+            shall_plot = iter_idx == 0
+
             # NOTE: batch size is set to 1,
             # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
             # while different patients have different [t_start, t_end] in our dataset.
@@ -109,21 +118,20 @@ def train(config: AttributeHashmap):
                 convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
             # NOTE: Optimize auxiliary network.
-            cls_logit_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
-            cls_logit_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
-            cls_logit_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
-
             ones = torch.ones(images.shape[0], device=device)
             zeros = torch.zeros(images.shape[0], device=device)
-            loss_aux = bce_loss(cls_logit_pos, ones) + \
-                bce_loss(cls_logit_neg1, zeros) + bce_loss(cls_logit_neg2, zeros)
+            cls_prob_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
+            cls_prob_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
+            cls_prob_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
+            loss_aux = 2 * bce_loss(cls_prob_pos, ones) + \
+                bce_loss(cls_prob_neg1, zeros) + bce_loss(cls_prob_neg2, zeros)
 
             train_loss_aux += loss_aux.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
             loss_aux.backward()
             if iter_idx % config.batch_size == 0:
-                torch.nn.utils.clip_grad_norm_(model_aux.parameters(), 0.1)
+                # torch.nn.utils.clip_grad_norm_(model_aux.parameters(), 0.1)
                 optimizer_aux.step()
                 optimizer_aux.zero_grad()
 
@@ -136,9 +144,16 @@ def train(config: AttributeHashmap):
             x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
             loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
-            cls_logit_pos1 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
-            cls_logit_pos2 = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
-            loss_pred = bce_loss(cls_logit_pos1, ones) + bce_loss(cls_logit_pos2, ones)
+
+            if shall_plot or not running_stage1:
+                cls_prob_x0 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
+                cls_prob_xT = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+
+            if running_stage1:
+                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+            else:
+                loss_pred = bce_loss(cls_prob_x0, ones) + bce_loss(cls_prob_xT, ones)
+
             loss = loss_recon + loss_pred
 
             train_loss += loss.item()
@@ -151,23 +166,23 @@ def train(config: AttributeHashmap):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            if config.share_weight_main:
-                # Freeze the encoder of the auxiliary network,
-                # and share its weight from the main network encoder.
-                model_aux.encoder.copy_weights(model.encoder)
-
-            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, \
+                posA, posB, neg1A, neg1B, neg2A, neg2B = \
+                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
+                                pos_pair[0], pos_pair[1], neg_pair1[0], neg_pair1[1], neg_pair2[0], neg_pair2[1])
 
             train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
             train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
             train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
             train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
-            if iter_idx == 10:
+            if shall_plot:
                 save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
                     save_folder_fig_log, str(epoch_idx).zfill(5))
-                plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+                plot_side_by_side(t_list, save_path_fig_sbs,
+                                  x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
+                                  posA, posB, neg1A, neg1B, neg2A, neg2B,
+                                  cls_prob_x0, cls_prob_xT, cls_prob_pos, cls_prob_neg1, cls_prob_neg2)
 
         train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
             [item / len(train_set.dataset) for item in (train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
@@ -175,8 +190,8 @@ def train(config: AttributeHashmap):
         lr_scheduler.step()
         lr_scheduler_aux.step()
 
-        log('Train [%s/%s] loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
+        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+            % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
                train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim),
             filepath=config.log_dir,
             to_console=False)
@@ -187,6 +202,7 @@ def train(config: AttributeHashmap):
         model_aux.eval()
         with torch.no_grad():
             for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in enumerate(tqdm(val_set)):
+                shall_plot = iter_idx == 0
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
                 assert images.shape[1] == 2
@@ -208,11 +224,22 @@ def train(config: AttributeHashmap):
                     numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
                 loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
-                cls_logit_pos1 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
-                cls_logit_pos2 = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
-                loss_pred = bce_loss(cls_logit_pos1, ones) + bce_loss(cls_logit_pos2, ones)
+
+                if shall_plot:
+                    cls_prob_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
+                    cls_prob_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
+                    cls_prob_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
+
+                cls_prob_x0 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
+                cls_prob_xT = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+
+                if running_stage1:
+                    loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                else:
+                    loss_pred = bce_loss(cls_prob_x0, ones) + bce_loss(cls_prob_xT, ones)
 
                 loss = loss_recon + loss_pred
+
                 val_loss += loss.item()
                 val_loss_recon += loss_recon.item()
                 val_loss_pred += loss_pred.item()
@@ -222,10 +249,13 @@ def train(config: AttributeHashmap):
                 val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
                 val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
-                if iter_idx == 10:
+                if shall_plot:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
                         save_folder_fig_log, str(epoch_idx).zfill(5))
-                    plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+                    plot_side_by_side(t_list, save_path_fig_sbs,
+                                      x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
+                                      posA, posB, neg1A, neg1B, neg2A, neg2B,
+                                      cls_prob_x0, cls_prob_xT, cls_prob_pos, cls_prob_neg1, cls_prob_neg2)
 
         val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = \
             [item / len(val_set.dataset) for item in (val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim)]
@@ -236,18 +266,20 @@ def train(config: AttributeHashmap):
             filepath=config.log_dir,
             to_console=False)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            model.save_weights(config.model_save_path)
-            log('%s: Model weights successfully saved.' % config.model,
-                filepath=config.log_dir,
-                to_console=False)
-
-        if early_stopper.step(val_loss):
-            log('Early stopping criterion met. Ending training.',
-                filepath=config.log_dir,
-                to_console=True)
-            break
+        if not running_stage1:
+            # Only work on best model saving and early stopping after reaching stage 2.
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                model.save_weights(config.model_save_path)
+                model_aux.save_weights(config.model_aux_save_path)
+                log('%s: Model weights successfully saved.' % config.model,
+                    filepath=config.log_dir,
+                    to_console=False)
+            if early_stopper.step(val_loss):
+                log('Early stopping criterion met. Ending training.',
+                    filepath=config.log_dir,
+                    to_console=True)
+                break
     return
 
 
@@ -387,61 +419,112 @@ def convert_variables(images: torch.Tensor,
     return x_start, x_end, t_list, pos_pair, neg_pair1, neg_pair2
 
 
-def numpy_variables(x_start: torch.Tensor,
-                    x_start_recon: torch.Tensor,
-                    x_start_pred: torch.Tensor,
-                    x_end: torch.Tensor,
-                    x_end_recon: torch.Tensor,
-                    x_end_pred: torch.Tensor) -> Tuple[np.array]:
+def numpy_variables(*tensors: torch.Tensor) -> Tuple[np.array]:
     '''
     Some repetitive numpy casting of variables.
     '''
-    x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-
-    xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-
-    return x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred
+    return [_tensor.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0) for _tensor in tensors]
 
 
-def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
-    fig_sbs = plt.figure(figsize=(12, 10))
+def plot_side_by_side(t_list: List[int],
+                      save_path: str,
+                      x0_true: np.array, xT_true: np.array,
+                      x0_recon: np.array, xT_recon: np.array,
+                      x0_pred: np.array, xT_pred: np.array,
+                      posA: np.array, posB: np.array,
+                      neg1A: np.array, neg1B: np.array,
+                      neg2A: np.array, neg2B: np.array,
+                      prob_x0, prob_xT,
+                      prob_pos, prob_neg1, prob_neg2) -> None:
+    fig_sbs = plt.figure(figsize=(36, 10))
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
-    ax = fig_sbs.add_subplot(2, 3, 1)
+    ax = fig_sbs.add_subplot(2, 9, 1)
     ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
     ax.set_title('GT, time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 4)
+    ax = fig_sbs.add_subplot(2, 9, 10)
     ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
     ax.set_title('GT, time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
-    ax = fig_sbs.add_subplot(2, 3, 2)
+    ax = fig_sbs.add_subplot(2, 9, 2)
     ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
     ax.set_title('Recon, time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 5)
+    ax = fig_sbs.add_subplot(2, 9, 11)
     ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
     ax.set_title('Recon, time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
-    ax = fig_sbs.add_subplot(2, 3, 3)
+    ax = fig_sbs.add_subplot(2, 9, 3)
     ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
     ax.set_title('Pred, input time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 6)
+    ax = fig_sbs.add_subplot(2, 9, 12)
     ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
     ax.set_title('Pred, input time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 9, 5)
+    ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
+    ax.set_title('AuxNet Prob: %.2f' % prob_x0)
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 9, 14)
+    ax.set_title('x0 True/Pred')
+    ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 9, 6)
+    ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
+    ax.set_title('AuxNet Prob: %.2f' % prob_xT)
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 9, 15)
+    ax.set_title('xT True/Pred')
+    ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 9, 7)
+    ax.imshow(np.clip((posA + 1) / 2, 0, 1))
+    ax.set_title('AuxNet Prob: %.2f' % prob_pos)
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 9, 16)
+    ax.set_title('positive pair')
+    ax.imshow(np.clip((posA + 1) / 2, 0, 1))
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 9, 8)
+    ax.imshow(np.clip((neg1A + 1) / 2, 0, 1))
+    ax.set_title('AuxNet Prob: %.2f' % prob_neg1)
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 9, 17)
+    ax.set_title('negative pair (same subject)')
+    ax.imshow(np.clip((neg1B + 1) / 2, 0, 1))
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    ax = fig_sbs.add_subplot(2, 9, 9)
+    ax.imshow(np.clip((neg2A + 1) / 2, 0, 1))
+    ax.set_title('AuxNet Prob: %.2f' % prob_neg2)
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 9, 18)
+    ax.set_title('negative pair (different subject)')
+    ax.imshow(np.clip((neg2B + 1) / 2, 0, 1))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
