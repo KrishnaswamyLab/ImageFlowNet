@@ -1,7 +1,7 @@
 import torch
 
 from .base import BaseNetwork
-from .nn_utils import ConvBlock, ResConvBlock, ConvBlockUpdateChannel
+from .nn_utils import ConvBlock, ResConvBlock
 from .common_encoder import Encoder
 
 
@@ -14,9 +14,13 @@ class AuxNet(BaseNetwork):
                  use_residual: bool = False,
                  in_channels: int = 3,
                  out_channels: int = 1,
+                 dim_proj: int = 256,
                  non_linearity: str = 'relu'):
         '''
-        Auxiliary Network that performs discrimination and segmentation.
+        Auxiliary Network that performs projection and segmentation.
+        The projection head brings the model to a vector space of `dim_proj` dimensions,
+        and performs contrastive learning. It then serves as a "discriminator" to train
+        the main network through loss backpropagation.
 
         Parameters
         ----------
@@ -40,6 +44,7 @@ class AuxNet(BaseNetwork):
         self.depth = depth
         self.use_residual = use_residual
         self.in_channels = in_channels
+        self.dim_proj = dim_proj
         self.non_linearity_str = non_linearity
         if self.non_linearity_str == 'relu':
             self.non_linearity = torch.nn.ReLU(inplace=True)
@@ -76,13 +81,12 @@ class AuxNet(BaseNetwork):
             torch.nn.Sigmoid(),
         ])
 
-        # This is for the classification head
-        self.cls_head = torch.nn.ModuleList([
-            ConvBlockUpdateChannel(n_f * 2 ** (self.depth + 1), n_f),
+        # This is for the projection head
+        self.proj_head = torch.nn.ModuleList([
+            conv_block(n_f * 2 ** self.depth),
             torch.nn.AdaptiveAvgPool2d((1, 1)),
             torch.nn.Flatten(),
-            torch.nn.Linear(n_f, 1),
-            torch.nn.Sigmoid(),
+            torch.nn.Linear(n_f * 2 ** self.depth, self.dim_proj),
         ])
 
     def forward_seg(self, x: torch.Tensor):
@@ -106,19 +110,17 @@ class AuxNet(BaseNetwork):
 
         return x
 
-    def forward_cls(self, x1: torch.Tensor, x2: torch.Tensor):
+    def forward_proj(self, x: torch.Tensor):
         '''
-        Forward through the classification path.
+        Forward through the projection path.
         '''
 
-        x1, _ = self.encoder(x1)
-        x2, _ = self.encoder(x2)
-        x = torch.cat([x1, x2], dim=1)
+        x, _ = self.encoder(x)
 
-        for module in self.cls_head:
+        for module in self.proj_head:
             x = module(x)
 
         return x
 
     def forward(self, *args, **kwargs):
-        raise NotImplementedError('Please use `forward_seg` or `forward_cls` instead.')
+        raise NotImplementedError('Please use `forward_seg` or `forward_proj` instead.')

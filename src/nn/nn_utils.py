@@ -103,24 +103,6 @@ class ResConvBlock(torch.nn.Module):
         return self.conv(x) + x
 
 
-class ConvBlockUpdateChannel(torch.nn.Module):
-
-    def __init__(self, num_filters_in: int, num_filters_out: int):
-        super().__init__()
-        self.conv_uc = torch.nn.Sequential(
-            torch.nn.Conv2d(num_filters_in,
-                            num_filters_out,
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            bias=True),
-            torch.nn.InstanceNorm2d(num_filters_out),
-            torch.nn.LeakyReLU(0.2, inplace=True))
-
-    def forward(self, x):
-        return self.conv_uc(x)
-
-
 class ConcatConv2d(torch.nn.Module):
 
     def __init__(self,

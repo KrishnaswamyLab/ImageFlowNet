@@ -66,13 +66,13 @@ def train(config: AttributeHashmap):
     lr_scheduler = LinearWarmupCosineAnnealingLR(
         optimizer=optimizer,
         warmup_epochs=10,
-        warmup_start_lr=float(config.learning_rate) / 100,
+        warmup_start_lr=float(config.learning_rate) / 10,
         max_epochs=config.max_epochs,
         eta_min=0)
     lr_scheduler_aux = LinearWarmupCosineAnnealingLR(
         optimizer=optimizer_aux,
         warmup_epochs=10,
-        warmup_start_lr=float(config.learning_rate) / 100,
+        warmup_start_lr=float(config.learning_rate) / 10,
         max_epochs=config.max_epochs,
         eta_min=0)
     early_stopper = EarlyStopping(mode='min',
@@ -80,8 +80,10 @@ def train(config: AttributeHashmap):
                                   percentage=False)
 
     mse_loss = torch.nn.MSELoss()
-    bce_loss = torch.nn.BCELoss()
+    # bce_loss = torch.nn.BCELoss()
+    cossim_loss = torch.nn.CosineSimilarity()
     best_val_loss = np.inf
+    backprop_freq = config.batch_size
 
     save_folder_fig_log = '%s/log/' % config.output_save_path
     os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
@@ -92,6 +94,7 @@ def train(config: AttributeHashmap):
 
         train_loss, train_loss_aux, num_correct, num_total, train_loss_recon, train_loss_pred, \
             train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = 0, 0, 0
         model.train()
         model_aux.train()
         optimizer.zero_grad()
@@ -117,22 +120,30 @@ def train(config: AttributeHashmap):
                 convert_variables(images, timestamps, pos_pair, neg_pair1, neg_pair2, device)
 
             # NOTE: Optimize auxiliary network.
-            ones = torch.ones(images.shape[0], device=device)
-            zeros = torch.zeros(images.shape[0], device=device)
-            cls_prob_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
-            cls_prob_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
-            cls_prob_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
-            loss_aux = 2 * bce_loss(cls_prob_pos, ones) + \
-                bce_loss(cls_prob_neg1, zeros) + bce_loss(cls_prob_neg2, zeros)
-            num_correct += (cls_prob_pos > 0.5) * 2 + (cls_prob_neg1 < 0.5) + (cls_prob_neg2 < 0.5)
+            vec_posA, vec_posB = model_aux.forward_proj(pos_pair[0]), model_aux.forward_proj(pos_pair[1])
+            vec_neg1A, vec_neg1B = model_aux.forward_proj(neg_pair1[0]), model_aux.forward_proj(neg_pair1[1])
+            vec_neg2A, vec_neg2B = model_aux.forward_proj(neg_pair2[0]), model_aux.forward_proj(neg_pair2[1])
+
+            sim_pos = cossim_loss(vec_posA, vec_posB).mean()
+            sim_neg1 = cossim_loss(vec_neg1A, vec_neg1B).mean()
+            sim_neg2 = cossim_loss(vec_neg2A, vec_neg2B).mean()
+
+            # Loss of the auxiliary network is a triplet-like loss using cosine distances.
+            cos_dist_pos = (1 - sim_pos)
+            cos_dist_neg =  1/2 * (1 - sim_neg1 + 1 - sim_neg2)
+            margin = 1.0  # Relax the cosine distance constraint on the negative pairs.
+            loss_aux = torch.relu(cos_dist_pos - cos_dist_neg + margin)
+
+            num_correct += (sim_pos.item() > 0) * 2
+            num_correct += (sim_neg1.item() < 0) + (sim_neg2.item() < 0)
             num_total += 4
 
             train_loss_aux += loss_aux.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
+            loss_aux = loss_aux / backprop_freq
             loss_aux.backward()
-            if iter_idx % config.batch_size == 0:
-                # torch.nn.utils.clip_grad_norm_(model_aux.parameters(), 0.1)
+            if iter_idx % backprop_freq == 0:
                 optimizer_aux.step()
                 optimizer_aux.zero_grad()
 
@@ -144,26 +155,33 @@ def train(config: AttributeHashmap):
             x_start_pred = model(x=x_end, t=-torch.diff(t_list))
             x_end_pred = model(x=x_start, t=torch.diff(t_list))
 
-            loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+            loss_recon = (mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)).mean()
 
             if shall_plot or not running_stage1:
-                cls_prob_x0 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
-                cls_prob_xT = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+                vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred)
+                vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred)
+                sim_x0 = cossim_loss(vec_x0_true, vec_x0_pred).mean()
+                sim_xT = cossim_loss(vec_xT_true, vec_xT_pred).mean()
 
             if running_stage1:
-                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                loss_pred = (mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)).mean()
             else:
-                loss_pred = bce_loss(cls_prob_x0, ones) + bce_loss(cls_prob_xT, ones)
+                # Prediciton loss is cosine distances between pred vec and true vec.
+                loss_pred = (1 - sim_x0) + (1 - sim_xT)
 
             loss = loss_recon + loss_pred
 
             train_loss += loss.item()
             train_loss_recon += loss_recon.item()
             train_loss_pred += loss_pred.item()
+            train_cossim_pos += sim_pos.item()
+            train_cossim_neg1 += sim_neg1.item()
+            train_cossim_neg2 += sim_neg2.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
+            loss = loss / backprop_freq
             loss.backward()
-            if iter_idx % config.batch_size == 0:
+            if iter_idx % backprop_freq == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -183,18 +201,24 @@ def train(config: AttributeHashmap):
                 plot_side_by_side(t_list, save_path_fig_sbs,
                                   x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
                                   posA, posB, neg1A, neg1B, neg2A, neg2B,
-                                  cls_prob_x0, cls_prob_xT, cls_prob_pos, cls_prob_neg1, cls_prob_neg2)
+                                  sim_x0, sim_xT, sim_pos, sim_neg1, sim_neg2)
 
-        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
-            [item / len(train_set.dataset) for item in (train_loss, train_loss_aux, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
+            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, \
+                train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
+            [item / len(train_set.dataset) for item in \
+                (train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
+                 train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
+                 train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
         train_aux_acc = num_correct / num_total * 100
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
 
-        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux Acc: %.3f'
+        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux Acc: %.3f, Aux CosSim(pos): %.3f, Aux CosSim(other t): %.3f, Aux CosSim(other x): %.3f'
             % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
-               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, train_aux_acc),
+               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
+               train_aux_acc, train_cossim_pos, train_cossim_neg1, train_cossim_neg2),
             filepath=config.log_dir,
             to_console=False)
 
@@ -228,17 +252,23 @@ def train(config: AttributeHashmap):
                 loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
 
                 if shall_plot:
-                    cls_prob_pos = model_aux.forward_cls(pos_pair[0], pos_pair[1]).mean(1).view(-1)
-                    cls_prob_neg1 = model_aux.forward_cls(neg_pair1[0], neg_pair1[1]).mean(1).view(-1)
-                    cls_prob_neg2 = model_aux.forward_cls(neg_pair2[0], neg_pair2[1]).mean(1).view(-1)
+                    vec_posA, vec_posB = model_aux.forward_proj(pos_pair[0]), model_aux.forward_proj(pos_pair[1])
+                    vec_neg1A, vec_neg1B = model_aux.forward_proj(neg_pair1[0]), model_aux.forward_proj(neg_pair1[1])
+                    vec_neg2A, vec_neg2B = model_aux.forward_proj(neg_pair2[0]), model_aux.forward_proj(neg_pair2[1])
 
-                cls_prob_x0 = model_aux.forward_cls(x_start, x_start_pred).mean(1).view(-1)
-                cls_prob_xT = model_aux.forward_cls(x_end, x_end_pred).mean(1).view(-1)
+                    sim_pos = cossim_loss(vec_posA, vec_posB).mean()
+                    sim_neg1 = cossim_loss(vec_neg1A, vec_neg1B).mean()
+                    sim_neg2 = cossim_loss(vec_neg2A, vec_neg2B).mean()
+
+                vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred)
+                vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred)
+                sim_x0 = cossim_loss(vec_x0_true, vec_x0_pred).mean()
+                sim_xT = cossim_loss(vec_xT_true, vec_xT_pred).mean()
 
                 if running_stage1:
-                    loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                    loss_pred = (mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)).mean()
                 else:
-                    loss_pred = bce_loss(cls_prob_x0, ones) + bce_loss(cls_prob_xT, ones)
+                    loss_pred = (1 - sim_x0) + (1 - sim_xT)
 
                 loss = loss_recon + loss_pred
 
@@ -259,7 +289,7 @@ def train(config: AttributeHashmap):
                     plot_side_by_side(t_list, save_path_fig_sbs,
                                       x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred,
                                       posA, posB, neg1A, neg1B, neg2A, neg2B,
-                                      cls_prob_x0, cls_prob_xT, cls_prob_pos, cls_prob_neg1, cls_prob_neg2)
+                                      sim_x0, sim_xT, sim_pos, sim_neg1, sim_neg2)
 
         val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = \
             [item / len(val_set.dataset) for item in (val_loss, val_loss_recon, val_loss_pred, val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim)]
@@ -438,8 +468,8 @@ def plot_side_by_side(t_list: List[int],
                       posA: np.array, posB: np.array,
                       neg1A: np.array, neg1B: np.array,
                       neg2A: np.array, neg2B: np.array,
-                      prob_x0, prob_xT,
-                      prob_pos, prob_neg1, prob_neg2) -> None:
+                      sim_x0: float, sim_xT: float,
+                      sim_pos: float, sim_neg1: float, sim_neg2: float) -> None:
     fig_sbs = plt.figure(figsize=(36, 10))
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
@@ -479,7 +509,7 @@ def plot_side_by_side(t_list: List[int],
 
     ax = fig_sbs.add_subplot(2, 9, 5)
     ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
-    ax.set_title('AuxNet Prob: %.2f' % prob_x0)
+    ax.set_title('AuxNet CosSim: %.3f' % sim_x0)
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 9, 14)
@@ -490,7 +520,7 @@ def plot_side_by_side(t_list: List[int],
 
     ax = fig_sbs.add_subplot(2, 9, 6)
     ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
-    ax.set_title('AuxNet Prob: %.2f' % prob_xT)
+    ax.set_title('AuxNet CosSim: %.3f' % sim_xT)
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 9, 15)
@@ -501,18 +531,18 @@ def plot_side_by_side(t_list: List[int],
 
     ax = fig_sbs.add_subplot(2, 9, 7)
     ax.imshow(np.clip((posA + 1) / 2, 0, 1))
-    ax.set_title('AuxNet Prob: %.2f' % prob_pos)
+    ax.set_title('AuxNet CosSim: %.3f' % sim_pos)
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 9, 16)
     ax.set_title('positive pair')
-    ax.imshow(np.clip((posA + 1) / 2, 0, 1))
+    ax.imshow(np.clip((posB + 1) / 2, 0, 1))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
     ax = fig_sbs.add_subplot(2, 9, 8)
     ax.imshow(np.clip((neg1A + 1) / 2, 0, 1))
-    ax.set_title('AuxNet Prob: %.2f' % prob_neg1)
+    ax.set_title('AuxNet CosSim: %.3f' % sim_neg1)
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 9, 17)
@@ -523,7 +553,7 @@ def plot_side_by_side(t_list: List[int],
 
     ax = fig_sbs.add_subplot(2, 9, 9)
     ax.imshow(np.clip((neg2A + 1) / 2, 0, 1))
-    ax.set_title('AuxNet Prob: %.2f' % prob_neg2)
+    ax.set_title('AuxNet CosSim: %.3f' % sim_neg2)
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 9, 18)
