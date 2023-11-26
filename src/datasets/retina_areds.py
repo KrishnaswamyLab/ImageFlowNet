@@ -62,8 +62,8 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
                  return_format: str = Literal['one_pair', 'all_pairs',
                                               'array'],
                  pos_neg_pairs: bool = False,
-                 time_close_thr: int = 3,
-                 time_far_thr: int = 6):
+                 time_close_thr: int = 4,
+                 time_far_thr: int = 12):
         '''
         A subset of RetinaAREDSDataset.
 

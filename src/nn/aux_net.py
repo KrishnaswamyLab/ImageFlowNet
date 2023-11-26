@@ -77,6 +77,7 @@ class AuxNet(BaseNetwork):
         self.up_conn_list = self.up_conn_list[::-1]
 
         self.seg_head = torch.nn.ModuleList([
+            conv_block(n_f),
             torch.nn.Conv2d(n_f, out_channels, 1),
             torch.nn.Sigmoid(),
         ])
@@ -86,7 +87,9 @@ class AuxNet(BaseNetwork):
             conv_block(n_f * 2 ** self.depth),
             torch.nn.AdaptiveAvgPool2d((1, 1)),
             torch.nn.Flatten(),
-            torch.nn.Linear(n_f * 2 ** self.depth, self.dim_proj),
+            torch.nn.Linear(n_f * 2 ** self.depth, n_f * 2 ** self.depth, bias=False),
+            torch.nn.ReLU(),
+            torch.nn.Linear(n_f * 2 ** self.depth, self.dim_proj, bias=False),
         ])
 
     def forward_seg(self, x: torch.Tensor):
@@ -120,6 +123,8 @@ class AuxNet(BaseNetwork):
         for module in self.proj_head:
             x = module(x)
 
+        # L2-normalize to put it onto the unit hypersphere.
+        x = torch.nn.functional.normalize(x, dim=-1)
         return x
 
     def forward(self, *args, **kwargs):

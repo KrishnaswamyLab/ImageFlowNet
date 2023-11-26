@@ -107,7 +107,7 @@ def train(config: AttributeHashmap):
 
             # Simulate `config.batch_size` by batched optimizer update.
             loss.backward()
-            if iter_idx % config.batch_size == 0:
+            if iter_idx % config.batch_size == config.batch_size - 1:
                 optimizer.step()
                 optimizer.zero_grad()
 

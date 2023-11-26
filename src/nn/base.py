@@ -39,3 +39,17 @@ class BaseNetwork(torch.nn.Module):
                 torch.nn.init.normal_(m.weight, std=1e-3)
                 if m.bias is not None:
                     torch.nn.init.constant_(m.bias, 0)
+
+    def freeze(self):
+        '''
+        Freeze parameters.
+        '''
+        for p in self.parameters():
+            p.requires_grad = False
+
+    def unfreeze(self):
+        '''
+        Freeze parameters.
+        '''
+        for p in self.parameters():
+            p.requires_grad = True
