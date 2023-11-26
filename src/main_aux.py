@@ -91,9 +91,10 @@ def train(config: AttributeHashmap):
     for epoch_idx in tqdm(range(config.max_epochs)):
         running_stage1 = epoch_idx < config.epochs_stage1
 
-        train_loss, train_loss_aux, train_aux_auroc, train_loss_recon, train_loss_pred, \
-            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0, 0
+        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
+            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0
         train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = 0, 0, 0
+        aux_true_list, aux_pred_list = [], []
         model.train()
         model_aux.train()
         optimizer.zero_grad()
@@ -182,7 +183,8 @@ def train(config: AttributeHashmap):
             margin = 1.0  # Relax the cosine distance constraint on the negative pairs.
             loss_aux = torch.relu(cos_dist_pos - cos_dist_neg + margin)
 
-            train_aux_auroc += roc_auc_score([1, 0, 0], [sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
+            aux_true_list.extend([1, 0, 0])
+            aux_pred_list.extend([sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
             train_loss_aux += loss_aux.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
@@ -210,14 +212,16 @@ def train(config: AttributeHashmap):
                                   posA, posB, neg1A, neg1B, neg2A, neg2B,
                                   sim_x0, sim_xT, sim_pos, sim_neg1, sim_neg2)
 
+        train_aux_auroc = roc_auc_score(aux_true_list, aux_pred_list)
+
         num_train_samples = config.max_training_samples if 'max_training_samples' in config else len(train_set.dataset)
         train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
             train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, \
-                train_aux_auroc, train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
+                train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
             [item / num_train_samples for item in \
                 (train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
                  train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
-                 train_aux_auroc, train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
+                 train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
