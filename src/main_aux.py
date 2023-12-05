@@ -36,6 +36,7 @@ from utils.seed import seed_everything
 def train(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
+    print('Using device:', device)
     train_set, val_set, test_set, num_image_channel = \
         prepare_dataset(config=config)
 
@@ -61,20 +62,8 @@ def train(config: AttributeHashmap):
     model.init_params()
     model_aux.init_params()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    optimizer_aux = torch.optim.AdamW(model_aux.parameters(), lr=config.learning_rate)
-    lr_scheduler = LinearWarmupCosineAnnealingLR(
-        optimizer=optimizer,
-        warmup_epochs=10,
-        warmup_start_lr=float(config.learning_rate) / 100,
-        max_epochs=config.max_epochs,
-        eta_min=0)
-    lr_scheduler_aux = LinearWarmupCosineAnnealingLR(
-        optimizer=optimizer_aux,
-        warmup_epochs=10,
-        warmup_start_lr=float(config.learning_rate) / 100,
-        max_epochs=config.max_epochs,
-        eta_min=0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.learning_rate), weight_decay=1e-4)
+    optimizer_aux = torch.optim.AdamW(model_aux.parameters(), lr=float(config.learning_rate_aux), weight_decay=1e-4)
     early_stopper = EarlyStopping(mode='min',
                                   patience=config.patience,
                                   percentage=False)
@@ -89,12 +78,35 @@ def train(config: AttributeHashmap):
     os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
+        if epoch_idx == 0:
+            lr_scheduler = LinearWarmupCosineAnnealingLR(
+                optimizer=optimizer,
+                warmup_epochs=10,
+                warmup_start_lr=float(config.learning_rate) / 100,
+                max_epochs=config.epochs_stage1,
+                eta_min=0)
+            lr_scheduler_aux = LinearWarmupCosineAnnealingLR(
+                optimizer=optimizer_aux,
+                warmup_epochs=10,
+                warmup_start_lr=float(config.learning_rate_aux) / 100,
+                max_epochs=config.epochs_stage1,
+                eta_min=0)
+        elif epoch_idx == config.epochs_stage1:
+            # Re-initialize the optimizer and scheduler for the main network.
+            optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.learning_rate), weight_decay=1e-4)
+            lr_scheduler = LinearWarmupCosineAnnealingLR(
+                optimizer=optimizer,
+                warmup_epochs=10,
+                warmup_start_lr=float(config.learning_rate) / 100,
+                max_epochs=config.max_epochs - config.epochs_stage1,
+                eta_min=0)
+
         running_stage1 = epoch_idx < config.epochs_stage1
 
-        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
+        train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred, \
             train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0, 0, 0
         train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = 0, 0, 0
-        aux_true_list, aux_pred_list = [], []
+        aux_true_list, aux_pred_neg_list, aux_pred_syn_list = [], [], []
         model.train()
         model_aux.train()
         optimizer.zero_grad()
@@ -129,6 +141,8 @@ def train(config: AttributeHashmap):
             # Don't track the gradient for the auxiliary network in this stage!
             model_aux.freeze()
 
+            # Unfreeze the main model.
+            model.unfreeze()
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
@@ -136,29 +150,43 @@ def train(config: AttributeHashmap):
             # Time is in months. Divide by 10 for smaller ODE interval.
             x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
             x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+            x_start_pred_detach = x_start_pred.detach()
+            x_end_pred_detach = x_end_pred.detach()
 
             loss_recon = (mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)).mean()
+            train_loss_recon += loss_recon.item()
 
-            if shall_plot or not running_stage1:
+            if not running_stage1:
                 vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred)
                 vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred)
                 sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
                 sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            loss_ = loss_recon / backprop_freq
+            loss_.backward()
+
+            ######################## Optimizer ODE ############################
+            # Freeze all modules other than ODE.
+            try:
+                model.freeze_non_ode()
+            except AttributeError:
+                print('`model.freeze_non_ode()` ignored.')
 
             if running_stage1:
                 loss_pred = (mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)).mean()
             else:
                 # Prediciton loss is cosine distances between pred vec and true vec.
                 loss_pred = (1 - sim_x0) + (1 - sim_xT)
-
-            loss = loss_recon + loss_pred
-            train_loss += loss.item()
-            train_loss_recon += loss_recon.item()
             train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
-            loss_ = loss / backprop_freq
+            loss_ = loss_pred / backprop_freq
             loss_.backward()
+
+            model.unfreeze()
+            ######################## Optimizer ODE ############################
+
             if iter_idx % backprop_freq == backprop_freq - 1:
                 optimizer.step()
                 optimizer.zero_grad()
@@ -166,10 +194,14 @@ def train(config: AttributeHashmap):
             # NOTE: Optimize auxiliary network.
             model_aux.unfreeze()
 
+            vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred_detach)
+            vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred_detach)
             vec_posA, vec_posB = model_aux.forward_proj(pos_pair[0]), model_aux.forward_proj(pos_pair[1])
             vec_neg1A, vec_neg1B = model_aux.forward_proj(neg_pair1[0]), model_aux.forward_proj(neg_pair1[1])
             vec_neg2A, vec_neg2B = model_aux.forward_proj(neg_pair2[0]), model_aux.forward_proj(neg_pair2[1])
 
+            sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
+            sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
             sim_pos = cossim(vec_posA, vec_posB).mean()
             sim_neg1 = cossim(vec_neg1A, vec_neg1B).mean()
             sim_neg2 = cossim(vec_neg2A, vec_neg2B).mean()
@@ -180,19 +212,26 @@ def train(config: AttributeHashmap):
             # Loss of the auxiliary network is a triplet-like loss using cosine distances.
             cos_dist_pos = (1 - sim_pos)
             cos_dist_neg =  1/2 * (1 - sim_neg1 + 1 - sim_neg2)
-            margin = 1.0  # Relax the cosine distance constraint on the negative pairs.
-            loss_aux = torch.relu(cos_dist_pos - cos_dist_neg + margin)
+            cos_dist_syn =  1/2 * (1 - sim_x0 + 1 - sim_xT)
+            margin = 1.0
+            loss_aux_neg = torch.relu(cos_dist_pos - cos_dist_neg + margin)
+            loss_aux_syn = torch.relu(cos_dist_pos - cos_dist_syn + margin)
+            loss_aux = loss_aux_neg + loss_aux_syn
 
             aux_true_list.extend([1, 0, 0])
-            aux_pred_list.extend([sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
-            train_loss_aux += loss_aux.item()
+            aux_pred_neg_list.extend([sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
+            aux_pred_syn_list.extend([sim_pos.item(), sim_x0.item(), sim_xT.item()])
+            train_loss_aux_neg += loss_aux_neg.item()
+            train_loss_aux_syn += loss_aux_syn.item()
 
-            # Simulate `config.batch_size` by batched optimizer update.
-            loss_aux_ = loss_aux / backprop_freq
-            loss_aux_.backward()
-            if iter_idx % backprop_freq == backprop_freq - 1:
-                optimizer_aux.step()
-                optimizer_aux.zero_grad()
+            # Only update the auxiliary network during stage 1.
+            if running_stage1:
+                # Simulate `config.batch_size` by batched optimizer update.
+                loss_aux_ = loss_aux / backprop_freq
+                loss_aux_.backward()
+                if iter_idx % backprop_freq == backprop_freq - 1:
+                    optimizer_aux.step()
+                    optimizer_aux.zero_grad()
 
             x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                 numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
@@ -212,24 +251,25 @@ def train(config: AttributeHashmap):
                                   posA, posB, neg1A, neg1B, neg2A, neg2B,
                                   sim_x0, sim_xT, sim_pos, sim_neg1, sim_neg2)
 
-        train_aux_auroc = roc_auc_score(aux_true_list, aux_pred_list)
+        train_aux_auroc_neg = roc_auc_score(aux_true_list, aux_pred_neg_list)
+        train_aux_auroc_syn = roc_auc_score(aux_true_list, aux_pred_syn_list)
 
         num_train_samples = config.max_training_samples if 'max_training_samples' in config else len(train_set.dataset)
-        train_loss, train_loss_aux, train_loss_recon, train_loss_pred, \
+        train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred, \
             train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, \
                 train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
             [item / num_train_samples for item in \
-                (train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
+                (train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred,
                  train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
                  train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
 
-        log('Train [%s/%s] Stage 1? %s, loss: %.3f [aux: %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux AUROC: %.3f, Aux CosSim(pos): %.3f, Aux CosSim(other t): %.3f, Aux CosSim(other x): %.3f'
-            % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss, train_loss_aux, train_loss_recon, train_loss_pred,
+        log('Train [%s/%s] Stage 1? %s, loss [aux (neg): %.3f, aux (syn): %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux AUROC (neg): %.3f, Aux AUROC (syn): %.3f, Aux CosSim(pos): %.3f, Aux CosSim(other t): %.3f, Aux CosSim(other x): %.3f'
+            % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred,
                train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
-               train_aux_auroc, train_cossim_pos, train_cossim_neg1, train_cossim_neg2),
+               train_aux_auroc_neg, train_aux_auroc_syn, train_cossim_pos, train_cossim_neg1, train_cossim_neg2),
             filepath=config.log_dir,
             to_console=False)
 
@@ -239,7 +279,7 @@ def train(config: AttributeHashmap):
         model_aux.eval()
         with torch.no_grad():
             for iter_idx, (images, timestamps, pos_pair, neg_pair1, neg_pair2) in enumerate(tqdm(val_set)):
-                shall_plot = iter_idx == 0
+                shall_plot = iter_idx == 1
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
                 assert images.shape[1] == 2

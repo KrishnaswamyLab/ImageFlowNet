@@ -76,6 +76,18 @@ class ODEUNet(BaseNetwork):
         self.ode_bottleneck = ODEBlock(ODEfunc(dim=n_f * 2 ** self.depth))
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
 
+    def non_ode_parameters(self):
+        '''
+        Parameters related to ODE.
+        '''
+        return set(self.parameters()) - set(self.ode_list.parameters()) - set(self.ode_bottleneck.parameters())
+
+    def freeze_non_ode(self):
+        '''
+        Freeze paramters that are not related to ODE.
+        '''
+        for p in self.non_ode_parameters():
+            p.requires_grad = False
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
