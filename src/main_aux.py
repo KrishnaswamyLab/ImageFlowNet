@@ -83,22 +83,22 @@ def train(config: AttributeHashmap):
                 optimizer=optimizer,
                 warmup_epochs=10,
                 warmup_start_lr=float(config.learning_rate) / 100,
-                max_epochs=config.epochs_stage1,
+                max_epochs=config.max_epochs,
                 eta_min=0)
             lr_scheduler_aux = LinearWarmupCosineAnnealingLR(
                 optimizer=optimizer_aux,
                 warmup_epochs=10,
                 warmup_start_lr=float(config.learning_rate_aux) / 100,
-                max_epochs=config.epochs_stage1,
+                max_epochs=config.max_epochs,
                 eta_min=0)
         elif epoch_idx == config.epochs_stage1:
             # Re-initialize the optimizer and scheduler for the main network.
-            optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.learning_rate), weight_decay=1e-4)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.learning_rate_finetune), weight_decay=1e-4)
             lr_scheduler = LinearWarmupCosineAnnealingLR(
                 optimizer=optimizer,
                 warmup_epochs=10,
                 warmup_start_lr=float(config.learning_rate) / 100,
-                max_epochs=config.max_epochs - config.epochs_stage1,
+                max_epochs=config.max_epochs,
                 eta_min=0)
 
         running_stage1 = epoch_idx < config.epochs_stage1
@@ -156,12 +156,6 @@ def train(config: AttributeHashmap):
             loss_recon = (mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)).mean()
             train_loss_recon += loss_recon.item()
 
-            if not running_stage1:
-                vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred)
-                vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred)
-                sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
-                sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
-
             # Simulate `config.batch_size` by batched optimizer update.
             loss_ = loss_recon / backprop_freq
             loss_.backward()
@@ -176,6 +170,10 @@ def train(config: AttributeHashmap):
             if running_stage1:
                 loss_pred = (mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)).mean()
             else:
+                vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred)
+                vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred)
+                sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
+                sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
                 # Prediciton loss is cosine distances between pred vec and true vec.
                 loss_pred = (1 - sim_x0) + (1 - sim_xT)
             train_loss_pred += loss_pred.item()
@@ -185,44 +183,46 @@ def train(config: AttributeHashmap):
             loss_.backward()
 
             model.unfreeze()
-            ######################## Optimizer ODE ############################
+            ####################################################################
 
             if iter_idx % backprop_freq == backprop_freq - 1:
                 optimizer.step()
                 optimizer.zero_grad()
 
             # NOTE: Optimize auxiliary network.
-            model_aux.unfreeze()
+            if running_stage1:
+                model_aux.unfreeze()
 
-            vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred_detach)
-            vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred_detach)
-            vec_posA, vec_posB = model_aux.forward_proj(pos_pair[0]), model_aux.forward_proj(pos_pair[1])
-            vec_neg1A, vec_neg1B = model_aux.forward_proj(neg_pair1[0]), model_aux.forward_proj(neg_pair1[1])
-            vec_neg2A, vec_neg2B = model_aux.forward_proj(neg_pair2[0]), model_aux.forward_proj(neg_pair2[1])
+            if running_stage1 or shall_plot:
+                vec_x0_true, vec_x0_pred = model_aux.forward_proj(x_start), model_aux.forward_proj(x_start_pred_detach)
+                vec_xT_true, vec_xT_pred = model_aux.forward_proj(x_end), model_aux.forward_proj(x_end_pred_detach)
+                vec_posA, vec_posB = model_aux.forward_proj(pos_pair[0]), model_aux.forward_proj(pos_pair[1])
+                vec_neg1A, vec_neg1B = model_aux.forward_proj(neg_pair1[0]), model_aux.forward_proj(neg_pair1[1])
+                vec_neg2A, vec_neg2B = model_aux.forward_proj(neg_pair2[0]), model_aux.forward_proj(neg_pair2[1])
 
-            sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
-            sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
-            sim_pos = cossim(vec_posA, vec_posB).mean()
-            sim_neg1 = cossim(vec_neg1A, vec_neg1B).mean()
-            sim_neg2 = cossim(vec_neg2A, vec_neg2B).mean()
-            train_cossim_pos += sim_pos.item()
-            train_cossim_neg1 += sim_neg1.item()
-            train_cossim_neg2 += sim_neg2.item()
+                sim_x0 = cossim(vec_x0_true, vec_x0_pred).mean()
+                sim_xT = cossim(vec_xT_true, vec_xT_pred).mean()
+                sim_pos = cossim(vec_posA, vec_posB).mean()
+                sim_neg1 = cossim(vec_neg1A, vec_neg1B).mean()
+                sim_neg2 = cossim(vec_neg2A, vec_neg2B).mean()
+                train_cossim_pos += sim_pos.item()
+                train_cossim_neg1 += sim_neg1.item()
+                train_cossim_neg2 += sim_neg2.item()
 
-            # Loss of the auxiliary network is a triplet-like loss using cosine distances.
-            cos_dist_pos = (1 - sim_pos)
-            cos_dist_neg =  1/2 * (1 - sim_neg1 + 1 - sim_neg2)
-            cos_dist_syn =  1/2 * (1 - sim_x0 + 1 - sim_xT)
-            margin = 1.0
-            loss_aux_neg = torch.relu(cos_dist_pos - cos_dist_neg + margin)
-            loss_aux_syn = torch.relu(cos_dist_pos - cos_dist_syn + margin)
-            loss_aux = loss_aux_neg + loss_aux_syn
+                # Loss of the auxiliary network is a triplet-like loss using cosine distances.
+                cos_dist_pos = (1 - sim_pos)
+                cos_dist_neg =  1/2 * (1 - sim_neg1 + 1 - sim_neg2)
+                cos_dist_syn =  1/2 * (1 - sim_x0 + 1 - sim_xT)
+                margin = 1.0
+                loss_aux_neg = torch.relu(cos_dist_pos - cos_dist_neg + margin)
+                loss_aux_syn = torch.relu(cos_dist_pos - cos_dist_syn + margin)
+                loss_aux = loss_aux_neg + loss_aux_syn
 
-            aux_true_list.extend([1, 0, 0])
-            aux_pred_neg_list.extend([sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
-            aux_pred_syn_list.extend([sim_pos.item(), sim_x0.item(), sim_xT.item()])
-            train_loss_aux_neg += loss_aux_neg.item()
-            train_loss_aux_syn += loss_aux_syn.item()
+                aux_true_list.extend([1, 0, 0])
+                aux_pred_neg_list.extend([sim_pos.item(), sim_neg1.item(), sim_neg2.item()])
+                aux_pred_syn_list.extend([sim_pos.item(), sim_x0.item(), sim_xT.item()])
+                train_loss_aux_neg += loss_aux_neg.item()
+                train_loss_aux_syn += loss_aux_syn.item()
 
             # Only update the auxiliary network during stage 1.
             if running_stage1:
@@ -251,26 +251,33 @@ def train(config: AttributeHashmap):
                                   posA, posB, neg1A, neg1B, neg2A, neg2B,
                                   sim_x0, sim_xT, sim_pos, sim_neg1, sim_neg2)
 
-        train_aux_auroc_neg = roc_auc_score(aux_true_list, aux_pred_neg_list)
-        train_aux_auroc_syn = roc_auc_score(aux_true_list, aux_pred_syn_list)
+        if running_stage1:
+            train_aux_auroc_neg = roc_auc_score(aux_true_list, aux_pred_neg_list)
+            train_aux_auroc_syn = roc_auc_score(aux_true_list, aux_pred_syn_list)
 
         num_train_samples = config.max_training_samples if 'max_training_samples' in config else len(train_set.dataset)
-        train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred, \
-            train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim, \
-                train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
+        train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
             [item / num_train_samples for item in \
-                (train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred,
-                 train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
-                 train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
+                (train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        if running_stage1:
+            train_loss_aux_neg, train_loss_aux_syn, train_cossim_pos, train_cossim_neg1, train_cossim_neg2 = \
+                [item / num_train_samples for item in \
+                    (train_loss_aux_neg, train_loss_aux_syn, train_cossim_pos, train_cossim_neg1, train_cossim_neg2)]
 
         lr_scheduler.step()
         lr_scheduler_aux.step()
 
-        log('Train [%s/%s] Stage 1? %s, loss [aux (neg): %.3f, aux (syn): %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux AUROC (neg): %.3f, Aux AUROC (syn): %.3f, Aux CosSim(pos): %.3f, Aux CosSim(other t): %.3f, Aux CosSim(other x): %.3f'
-            % (epoch_idx + 1, config.max_epochs, running_stage1, train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred,
-               train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
-               train_aux_auroc_neg, train_aux_auroc_syn, train_cossim_pos, train_cossim_neg1, train_cossim_neg2),
-            filepath=config.log_dir,
+        if running_stage1:
+            log('Train [%s/%s] [Stage 1]. loss [aux (neg): %.3f, aux (syn): %.3f, recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Aux AUROC (neg): %.3f, Aux AUROC (syn): %.3f, Aux CosSim(pos): %.3f, Aux CosSim(other t): %.3f, Aux CosSim(other x): %.3f'
+                % (epoch_idx + 1, config.max_epochs, train_loss_aux_neg, train_loss_aux_syn, train_loss_recon, train_loss_pred,
+                train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim,
+                train_aux_auroc_neg, train_aux_auroc_syn, train_cossim_pos, train_cossim_neg1, train_cossim_neg2),
+                filepath=config.log_dir,
+            to_console=False)
+        else:
+            log('Train [%s/%s] [Stage 2] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+                % (epoch_idx + 1, config.max_epochs, train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim),
+                filepath=config.log_dir,
             to_console=False)
 
         val_loss, val_loss_recon, val_loss_pred, \
