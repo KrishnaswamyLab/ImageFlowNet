@@ -19,20 +19,20 @@ class SAM_Segmenter(object):
         sam_model = sam_model_registry["default"](checkpoint=checkpoint).to(device)
         self.predictor = SamPredictor(sam_model)
 
-    def predict(self, image: np.array):
+    def segment(self, image: np.array):
         '''
         Run Segment Anything Model (SAM) using a box prompt.
         '''
-        # Use the top 50% brightest regions to estimate the prompt box.
-        # Use green channel only.
-        x_array, y_array = np.where(image[:, :, 1] > np.percentile(image[:, :, 1], 50))
+        # Estimate the prompt box.
+        image_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        x_array, y_array = np.where(image_gray > np.percentile(image_gray, 75))
         prompt_box = np.array([x_array.min(), y_array.min(), x_array.max(), y_array.max()])
 
         self.predictor.set_image(image)
         segments, _, _ = self.predictor.predict(box=prompt_box)
         segments = segments.transpose(1, 2, 0)
 
-        mask_idx = segments.sum(axis=(0,1)).argmax()
+        mask_idx = segments.sum(axis=(0, 1)).argmax()
         mask = segments[..., mask_idx]
         return mask
 
@@ -49,35 +49,42 @@ def crop_longitudinal(base_folder_source: str, base_folder_target: str):
 
     # SuperRetina config
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    sam_predictor = SAM_Segmenter(device=device, checkpoint='../../external_src/SAM/sam_vit_h_4b8939.pth')
+    sam_segmenter = SAM_Segmenter(device=device, checkpoint='../../external_src/SAM/sam_vit_h_4b8939.pth')
 
     source_image_folders = sorted(glob(base_folder_source + '/*'))
 
     for folder in tqdm(source_image_folders):
-        image_list = sorted(glob(folder + '/*.jpg'))
-        if len(image_list) <= 2:
-            # Can ignore this folder if there is fewer than 2 images.
-            pass
-
-        # Save the cropped images.
         subject_folder_name = os.path.basename(folder)
-        for i, image_path in enumerate(image_list):
-            moving_image_name = os.path.basename(moving_image_path)
-            moving_image = cv2.imread(moving_image_path, cv2.IMREAD_COLOR)
+        os.makedirs(base_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
 
-            goodMatch, status = match_kps(predict_config, descriptors[i], descriptors[fixed_idx])
-            H_m = find_homography(goodMatch, status, cv_kpts[i], cv_kpts[fixed_idx],
-                                num_matches_thr=predict_config['num_match_thr'], verbose=False)
+        image_list = sorted(glob(folder + '/*.jpg'))
+        assert len(image_list) > 0
 
-            if H_m is not None:
-                aligned_image = map_image(H_m, moving_image, fixed_image.shape)
-                cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + moving_image_name, aligned_image)
-                success += 1
+        if len(image_list) == 1:
+            # Directly copy the image over if there is only 1 image.
+            image_path = image_list[0]
+            image_name = os.path.basename(image_path)
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + image_name, image)
+
+        # Build a common mask for the images.
+        common_mask = None
+        for image_path in image_list:
+            image_name = os.path.basename(image_path)
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            mask = sam_segmenter.segment(image)
+            if common_mask is None:
+                common_mask = mask
             else:
-                print("Failed to align the two images! %s and %s" % (fixed_image_path, moving_image_path))
-            total += 1
+                common_mask = np.logical_and(common_mask, mask)
 
-    print('Registration success rate: (%.2f%%) %d/%d' % (success/total*100, success, total))
+        # Apply the common mask on all images.
+        assert common_mask is not None
+        for image_path in image_list:
+            image_name = os.path.basename(image_path)
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            image[~common_mask] = 0
+            cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + image_name, image)
 
 
 if __name__ == '__main__':
