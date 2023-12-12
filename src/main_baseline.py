@@ -117,14 +117,10 @@ def train(config: AttributeHashmap):
             x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                 numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
-            train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
-                xT_true, xT_recon) / 2
-            train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(
-                xT_true, xT_recon) / 2
-            train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(
-                xT_true, xT_pred) / 2
-            train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
-                xT_true, xT_pred) / 2
+            train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+            train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+            train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+            train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
             if shall_plot:
                 save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
@@ -162,14 +158,10 @@ def train(config: AttributeHashmap):
                 x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                     numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
 
-                val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
-                    xT_true, xT_recon) / 2
-                val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(
-                    xT_true, xT_recon) / 2
-                val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(
-                    xT_true, xT_pred) / 2
-                val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
-                    xT_true, xT_pred) / 2
+                val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+                val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+                val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+                val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
