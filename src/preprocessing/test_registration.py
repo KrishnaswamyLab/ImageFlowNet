@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from PIL import Image
+from segment_anything import SamPredictor, sam_model_registry
 
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
 sys.path.insert(0, import_dir + '/external_src/SuperRetina/')
@@ -16,6 +17,28 @@ from model.super_retina import SuperRetina
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.functional")
+
+
+def segment_SAM(image: np.array, device: torch.device) -> np.array:
+    '''
+    Run Segment Anything Model (SAM) using a box prompt.
+    '''
+    sam = sam_model_registry["default"](checkpoint=os.path.join('../../external_src/SAM/', "sam_vit_h_4b8939.pth"))
+    sam = sam.to(device)
+    sam_pred = SamPredictor(sam)
+    sam_pred.set_image(image)
+
+    # Use green channel for finding prompt box.
+    x_array, y_array = np.where(image[:, :, 1] > np.percentile(image[:, :, 1], 50))
+    prompt_box = np.array([x_array.min(), y_array.min(), x_array.max(), y_array.max()])
+
+    segments, _, _ = sam_pred.predict(box=prompt_box)
+    segments = segments.transpose(1, 2, 0)
+
+    mask_idx = segments.sum(axis=(0,1)).argmax()
+    mask = segments[..., mask_idx]
+
+    return mask
 
 
 def model_run(predict_config, model, moving_tensor, fixed_tensor, device):
@@ -279,6 +302,36 @@ def register(predict_config):
         plt.title('merged result')
         plt.imshow(merged)
         plt.savefig('test_registration/step4.png')
+        plt.close()
+
+    ######################### Keep the Overlapping Regions #########################
+    moving_align_rgb = cv2.cvtColor(
+        cv2.warpPerspective(moving_image, H_m, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0)),
+        cv2.COLOR_BGR2RGB)
+    fixed_image_rgb = cv2.cvtColor(cv2.imread(fixed_path), cv2.COLOR_BGR2RGB)
+    moving_mask = segment_SAM(moving_align_rgb, device)
+    fixed_mask = segment_SAM(fixed_image_rgb, device)
+    common_mask = np.logical_and(moving_mask, fixed_mask)
+
+    moving_align[~common_mask] = 0
+    fixed_gray[~common_mask] = 0
+    merged[~common_mask] = 0
+
+    if H_m is not None and show_registration:
+        plt.figure(dpi=200)
+        plt.subplot(131)
+        plt.axis('off')
+        plt.title('aligned moving')
+        plt.imshow(moving_align, 'gray')
+        plt.subplot(132)
+        plt.axis('off')
+        plt.title('fixed')
+        plt.imshow(fixed_gray, 'gray')
+        plt.subplot(133)
+        plt.axis('off')
+        plt.title('merged result')
+        plt.imshow(merged)
+        plt.savefig('test_registration/step5.png')
         plt.close()
 
     if H_m is not None:

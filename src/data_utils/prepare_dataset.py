@@ -10,7 +10,8 @@ def prepare_dataset(config: AttributeHashmap):
     # Read dataset.
     if config.dataset_name == 'retina_areds':
         dataset = RetinaAREDSDataset(base_path=config.dataset_path,
-                                target_dim=config.target_dim)
+                                     image_folder=config.image_folder,
+                                     target_dim=config.target_dim)
         Subset = RetinaAREDSSubset
     elif config.dataset_name == 'synthetic':
         dataset = SyntheticDataset(base_path=config.dataset_path,

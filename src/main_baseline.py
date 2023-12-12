@@ -49,18 +49,23 @@ def train(config: AttributeHashmap):
                                   patience=config.patience,
                                   percentage=False)
 
-    loss_fn = torch.nn.MSELoss()
+    mse_loss = torch.nn.MSELoss()
     best_val_psnr = 0
+    backprop_freq = config.batch_size
 
     save_folder_fig_log = '%s/log/' % config.output_save_path
     os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
     os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
-        train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0
+        train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
         model.train()
         optimizer.zero_grad()
         for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
+            if 'plot_freq' not in config.keys():
+                config.plot_freq = len(train_set)
+            shall_plot = iter_idx % config.plot_freq == 0
+
             # NOTE: batch size is set to 1,
             # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
             # while different patients have different [t_start, t_end] in our dataset.
@@ -73,20 +78,41 @@ def train(config: AttributeHashmap):
 
             x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
+            # Unfreeze the model.
+            model.unfreeze()
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
             assert torch.diff(t_list).item() > 0
-            x_start_pred = model(x=x_end, t=-torch.diff(t_list))
-            x_end_pred = model(x=x_start, t=torch.diff(t_list))
+            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-            loss_recon = loss_fn(x_start, x_start_recon) + loss_fn(
-                x_end, x_end_recon)
-            loss_pred = loss_fn(x_start, x_start_pred) + loss_fn(
-                x_end, x_end_pred)
+            ##################### Recon Loss to update Encoder/Decoder ################
+            loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+            train_loss_recon += loss_recon.item()
 
-            loss = loss_recon + loss_pred
-            train_loss += loss.item()
+            # Simulate `config.batch_size` by batched optimizer update.
+            loss_ = loss_recon / backprop_freq
+            loss_.backward()
+
+            ########################## Pred Loss to update ODE ########################
+            # Freeze all modules other than ODE.
+            try:
+                model.freeze_non_ode()
+            except AttributeError:
+                print('`model.freeze_non_ode()` ignored.')
+
+            loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+            train_loss_pred += loss_pred.item()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            loss_ = loss_pred / backprop_freq
+            loss_.backward()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            if iter_idx % config.batch_size == config.batch_size - 1:
+                optimizer.step()
+                optimizer.zero_grad()
 
             x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                 numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
@@ -100,24 +126,18 @@ def train(config: AttributeHashmap):
             train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(
                 xT_true, xT_pred) / 2
 
-            if iter_idx == 10:
-                save_path_fig_sbs = '%s/train/figure_log_epoch_%s.png' % (
-                    save_folder_fig_log, str(epoch_idx).zfill(5))
+            if shall_plot:
+                save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
+                    save_folder_fig_log, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
                 plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-            # Simulate `config.batch_size` by batched optimizer update.
-            loss.backward()
-            if iter_idx % config.batch_size == config.batch_size - 1:
-                optimizer.step()
-                optimizer.zero_grad()
-
-        train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
-            [item / len(train_set.dataset) for item in (train_loss, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
+            [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
         lr_scheduler.step()
 
-        log('Train [%s/%s] loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, train_loss, train_recon_psnr,
+        log('Train [%s/%s] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+            % (epoch_idx + 1, config.max_epochs, train_loss_pred, train_loss_recon, train_recon_psnr,
                train_recon_ssim, train_pred_psnr, train_pred_ssim),
             filepath=config.log_dir,
             to_console=False)
@@ -136,8 +156,8 @@ def train(config: AttributeHashmap):
                 x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
                 x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
-                x_start_pred = model(x=x_end, t=-torch.diff(t_list))
-                x_end_pred = model(x=x_start, t=torch.diff(t_list))
+                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
                 x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                     numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
@@ -205,7 +225,7 @@ def test(config: AttributeHashmap):
     save_path_fig_summary = '%s/results/summary.png' % config.output_save_path
     os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
 
-    loss_fn = torch.nn.MSELoss()
+    mse_loss = torch.nn.MSELoss()
 
     deltaT_list, psnr_list, ssim_list = [], [], []
     test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim = 0, 0, 0, 0, 0
@@ -221,12 +241,12 @@ def test(config: AttributeHashmap):
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
-        x_start_pred = model(x=x_end, t=-torch.diff(t_list))
-        x_end_pred = model(x=x_start, t=torch.diff(t_list))
+        x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+        x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-        loss_recon = loss_fn(x_start, x_start_recon) + loss_fn(
+        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(
             x_end, x_end_recon)
-        loss_pred = loss_fn(x_start, x_start_pred) + loss_fn(x_end, x_end_pred)
+        loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
 
         loss = loss_recon + loss_pred
         test_loss += loss.item()

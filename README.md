@@ -10,6 +10,9 @@ We want to predict the progression of diseases by interpolating or extrapolating
 ```
 ```
 
+## Under `external_src/SAM/`
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+
 ## Data Provided
 
 ## Dependencies
@@ -20,6 +23,7 @@ conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 c
 conda activate mip
 python -m pip install timm
 python -m pip install opencv-python
+python -m pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
 
 ## Usage
