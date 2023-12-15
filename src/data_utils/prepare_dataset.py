@@ -11,6 +11,7 @@ def prepare_dataset(config: AttributeHashmap):
     if config.dataset_name == 'retina_areds':
         dataset = RetinaAREDSDataset(base_path=config.dataset_path,
                                      image_folder=config.image_folder,
+                                     eye_mask_folder=config.eye_mask_folder,
                                      target_dim=config.target_dim)
         Subset = RetinaAREDSSubset
     elif config.dataset_name == 'synthetic':

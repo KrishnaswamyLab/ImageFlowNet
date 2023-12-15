@@ -62,16 +62,16 @@ class ConvBlock(torch.nn.Module):
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.BatchNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.ReLU(inplace=True),
             torch.nn.Conv2d(num_filters,
                             num_filters,
                             kernel_size=3,
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.BatchNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True))
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.ReLU(inplace=True))
 
     def forward(self, x):
         return self.conv(x)
@@ -88,16 +88,16 @@ class ResConvBlock(torch.nn.Module):
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.BatchNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True),
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.ReLU(inplace=True),
             torch.nn.Conv2d(num_filters,
                             num_filters,
                             kernel_size=3,
                             stride=1,
                             padding=1,
                             bias=True),
-            torch.nn.BatchNorm2d(num_filters),
-            torch.nn.LeakyReLU(0.2, inplace=True))
+            torch.nn.InstanceNorm2d(num_filters),
+            torch.nn.ReLU(inplace=True))
 
     def forward(self, x):
         return self.conv(x) + x

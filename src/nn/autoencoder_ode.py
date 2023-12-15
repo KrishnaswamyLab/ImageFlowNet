@@ -95,7 +95,7 @@ class ODEAutoEncoder(BaseNetwork):
             x = torch.nn.functional.interpolate(x,
                                                 scale_factor=2,
                                                 mode='bilinear',
-                                                align_corners=False)
+                                                align_corners=True)
             x = self.non_linearity(self.up_conn_list[d](x))
             x = self.up_list[d](x)
 

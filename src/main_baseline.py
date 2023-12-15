@@ -61,7 +61,18 @@ def train(config: AttributeHashmap):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
         model.train()
         optimizer.zero_grad()
-        for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
+        for iter_idx, _values in enumerate(tqdm(train_set)):
+            if config.eye_mask_folder is None:
+                (images, timestamps) = _values
+            else:
+                (images, timestamps, dice_coeff) = _values
+                if dice_coeff < config.dice_thr:
+                    continue
+
+            if 'max_training_samples' in config:
+                if iter_idx > config.max_training_samples:
+                    break
+
             if 'plot_freq' not in config.keys():
                 config.plot_freq = len(train_set)
             shall_plot = iter_idx % config.plot_freq == 0
@@ -78,16 +89,13 @@ def train(config: AttributeHashmap):
 
             x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
+            ##################### Recon Loss to update Encoder/Decoder ################
             # Unfreeze the model.
             model.unfreeze()
+
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
-            assert torch.diff(t_list).item() > 0
-            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-
-            ##################### Recon Loss to update Encoder/Decoder ################
             loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
             train_loss_recon += loss_recon.item()
 
@@ -102,12 +110,30 @@ def train(config: AttributeHashmap):
             except AttributeError:
                 print('`model.freeze_non_ode()` ignored.')
 
+            assert torch.diff(t_list).item() > 0
+            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+
             loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
             train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
             loss_ = loss_pred / backprop_freq
             loss_.backward()
+
+            # x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
+            # x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+
+            # assert torch.diff(t_list).item() > 0
+            # x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+            # x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+            # loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+            # train_loss_recon += loss_recon.item()
+            # loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+            # train_loss_pred += loss_pred.item()
+
+            # loss_ = (loss_recon + loss_pred) / backprop_freq
+            # loss_.backward()
 
             # Simulate `config.batch_size` by batched optimizer update.
             if iter_idx % config.batch_size == config.batch_size - 1:
@@ -141,9 +167,15 @@ def train(config: AttributeHashmap):
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         model.eval()
         with torch.no_grad():
-            for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
+            for iter_idx, _value in enumerate(tqdm(val_set)):
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
+                if config.eye_mask_folder is None:
+                    (images, timestamps) = _values
+                else:
+                    (images, timestamps, dice_coeff) = _values
+                    if dice_coeff < config.dice_thr:
+                        continue
 
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]

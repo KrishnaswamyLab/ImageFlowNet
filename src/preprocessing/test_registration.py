@@ -28,8 +28,8 @@ def segment_SAM(image: np.array, device: torch.device) -> np.array:
     sam_pred = SamPredictor(sam)
     sam_pred.set_image(image)
 
-    image_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    x_array, y_array = np.where(image_gray > np.percentile(image_gray, 75))
+    image_red = image[:, :, 0]
+    x_array, y_array = np.where(image_red > np.percentile(image_red, 50))
     prompt_box = np.array([x_array.min(), y_array.min(), x_array.max(), y_array.max()])
 
     segments, _, _ = sam_pred.predict(box=prompt_box)

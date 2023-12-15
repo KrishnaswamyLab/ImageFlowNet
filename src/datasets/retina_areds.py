@@ -8,11 +8,13 @@ import numpy as np
 from torch.utils.data import Dataset
 
 
+
 class RetinaAREDSDataset(Dataset):
 
     def __init__(self,
                  base_path: str = '../../data/',
                  image_folder: str = 'AREDS_2014_images_512x512/',
+                 eye_mask_folder: str = None,
                  target_dim: Tuple[int] = (512, 512)):
         '''
         Information regarding the dataset.
@@ -38,13 +40,28 @@ class RetinaAREDSDataset(Dataset):
         self.target_dim = target_dim
         all_image_folders = sorted(glob('%s/%s/*/' %
                                         (base_path, image_folder)))
+        self.eye_mask_folder = eye_mask_folder
+
+        if self.eye_mask_folder is not None:
+            all_eye_mask_folders = sorted(glob('%s/%s/*/' %
+                                               (base_path, eye_mask_folder)))
 
         self.image_by_patient = []
-
-        for folder in all_image_folders:
-            paths = sorted(glob('%s/*.jpg' % (folder)))
-            if len(paths) >= 2:
-                self.image_by_patient.append(paths)
+        if self.eye_mask_folder is not None:
+            self.eye_mask_by_patient = []
+            for image_folder, eye_mask_folder in zip(all_image_folders, all_eye_mask_folders):
+                assert image_folder.split('/')[-1] == eye_mask_folder.split('/')[-1]
+                image_paths = sorted(glob('%s/*.jpg' % (image_folder)))
+                eye_mask_paths = sorted(glob('%s/*.jpg' % (eye_mask_folder)))
+                assert len(image_paths) == len(eye_mask_paths)
+                if len(image_paths) >= 2:
+                    self.image_by_patient.append(image_paths)
+                    self.eye_mask_by_patient.append(eye_mask_paths)
+        else:
+            for image_folder in all_image_folders:
+                image_paths = sorted(glob('%s/*.jpg' % (image_folder)))
+                if len(image_paths) >= 2:
+                    self.image_by_patient.append(image_paths)
 
     def __len__(self) -> int:
         return len(self.image_by_patient)
@@ -59,8 +76,7 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
     def __init__(self,
                  main_dataset: RetinaAREDSDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs',
-                                              'array'],
+                 return_format: str = Literal['one_pair', 'all_pairs'],
                  pos_neg_pairs: bool = False,
                  time_close_thr: int = 4,
                  time_far_thr: int = 12):
@@ -83,13 +99,14 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
         self.pos_neg_pairs = pos_neg_pairs
         self.time_close_thr = time_close_thr
         self.time_far_thr = time_far_thr
+        self.mask_common_area = main_dataset.eye_mask_folder is not None
 
         self.image_by_patient = [
             main_dataset.image_by_patient[i] for i in subset_indices
         ]
 
-        self.all_image_pairs = []
         self.patient_idx_list = []
+        self.all_image_pairs = []
         for _patient_idx, image_list in enumerate(self.image_by_patient):
             pair_indices = list(
                 itertools.combinations(np.arange(len(image_list)), r=2))
@@ -98,6 +115,18 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
                     [image_list[idx1], image_list[idx2]])
                 self.patient_idx_list.append(_patient_idx)
 
+        if self.mask_common_area:
+            self.eye_mask_by_patient = [
+                main_dataset.eye_mask_by_patient[i] for i in subset_indices
+            ]
+            self.all_eye_mask_pairs = []
+            for _patient_idx, eye_mask_list in enumerate(self.eye_mask_by_patient):
+                pair_indices = list(
+                    itertools.combinations(np.arange(len(eye_mask_list)), r=2))
+                for (idx1, idx2) in pair_indices:
+                    self.all_eye_mask_pairs.append(
+                        [eye_mask_list[idx1], eye_mask_list[idx2]])
+
     def __len__(self) -> int:
         if self.return_format == 'one_pair':
             # If we only return 1 pair of images per patient...
@@ -105,9 +134,6 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
         elif self.return_format == 'all_pairs':
             # If we return all pairs of images per patient...
             return len(self.all_image_pairs)
-        elif self.return_format == 'array':
-            # If we return all images as an array per patient...
-            return len(self.image_by_patient)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
         '''
@@ -122,14 +148,26 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
             image_list = self.image_by_patient[idx]
             pair_paths = list(
                 itertools.combinations(np.arange(len(image_list)), r=2))
+            rand_idx = np.random.choice(len(pair_paths))
             sampled_pair = [
                 image_list[i]
-                for i in pair_paths[np.random.choice(len(pair_paths))]
+                for i in pair_paths[rand_idx]
             ]
             images = np.array([
                 load_image(p, target_dim=self.target_dim) for p in sampled_pair
             ])
             timestamps = np.array([get_time(p) for p in sampled_pair])
+            if self.mask_common_area:
+                eye_mask_list = self.eye_mask_by_patient[idx]
+                eye_mask_pair = [
+                    eye_mask_list[i]
+                    for i in pair_paths[rand_idx]
+                ]
+                eye_masks = np.array([
+                    load_mask(p, target_dim=self.target_dim) for p in eye_mask_pair
+                ])
+                assert len(eye_masks) == 2
+                dice_coeff = DICE(eye_masks[0], eye_masks[1])
 
         elif self.return_format == 'all_pairs':
             queried_pair = self.all_image_pairs[idx]
@@ -138,18 +176,30 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
             ])
             timestamps = np.array([get_time(p) for p in queried_pair])
 
-        elif self.return_format == 'array':
-            queried_patient = self.image_by_patient[idx]
-            images = np.array([
-                load_image(p, target_dim=self.target_dim)
-                for p in queried_patient
-            ])
-            timestamps = np.array([get_time(p) for p in queried_patient])
+            if self.mask_common_area:
+                queried_eye_mask_pair = self.all_eye_mask_pairs[idx]
+                eye_masks = np.array([
+                    load_mask(p, target_dim=self.target_dim) for p in queried_eye_mask_pair
+                ])
+                assert len(eye_masks) == 2
+                dice_coeff = DICE(eye_masks[0], eye_masks[1])
 
         if not self.pos_neg_pairs:
-            return images, timestamps
+            if self.mask_common_area:
+                # Apply the eye masks.
+                if images.shape[1] != 1:
+                    eye_masks = np.repeat(eye_masks, images.shape[1], axis=1)
+                images[0][~eye_masks[0]] = 0
+                images[0][~eye_masks[1]] = 0
+                images[1][~eye_masks[0]] = 0
+                images[1][~eye_masks[1]] = 0
+                return images, timestamps, dice_coeff
+            else:
+                return images, timestamps
 
-        if self.return_format in ['one_pair', 'array']:
+        #TODO: Have not enabled self.mask_common_area along with self.pos_neg_pairs!
+
+        if self.return_format == 'one_pair':
             curr_patient_idx = idx
         elif self.return_format == 'all_pairs':
             curr_patient_idx = self.patient_idx_list[idx]
@@ -220,6 +270,22 @@ def load_image(path: str, target_dim: Tuple[int] = None) -> np.array:
 
     return image
 
+def load_mask(path: str, target_dim: Tuple[int] = None) -> np.array:
+    ''' Load binary mask as numpy array from a path string.'''
+    if target_dim is not None:
+        mask = np.array(
+            cv2.resize(cv2.imread(path, cv2.IMREAD_GRAYSCALE), target_dim))
+    else:
+        mask = np.array(cv2.imread(path, cv2.IMREAD_GRAYSCALE))
+
+    # Normalize image.
+    assert mask.max() in [0, 255]
+    mask = mask > 128
+
+    # Channel first to comply with Torch.
+    mask = mask[None, ...]
+
+    return mask
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
@@ -228,3 +294,30 @@ def get_time(path: str) -> float:
     assert len(time) in [2, 3]
     time = float(time)
     return time
+
+
+def DICE(mask1: np.array, mask2: np.array) -> float:
+    '''
+    Dice Coefficient between 2 binary masks.
+    '''
+
+    if isinstance(mask1.min(), bool):
+        mask1 = np.uint8(mask1)
+    if isinstance(mask2.min(), bool):
+        mask2 = np.uint8(mask2)
+
+    assert mask1.min() in [0, 1] and mask2.min() in [0, 1], \
+        'min values for masks are not in [0, 1]: mask1: %s, mask2: %s' % (mask1.min(), mask2.min())
+    assert mask1.max() == 1 and mask2.max() == 1, \
+        'max values for masks are not 1: mask1: %s, mask2: %s' % (mask1.max(), mask2.max())
+
+    assert mask1.shape == mask2.shape, \
+        'mask shapes do not match: %s vs %s' % (mask1.shape, mask2.shape)
+
+    intersection = np.logical_and(mask1, mask2).sum()
+    denom = np.sum(mask1) + np.sum(mask2)
+    epsilon = 1e-9
+
+    dice = 2 * intersection / (denom + epsilon)
+
+    return dice
