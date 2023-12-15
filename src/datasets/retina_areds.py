@@ -47,7 +47,12 @@ class RetinaAREDSDataset(Dataset):
                                                (base_path, eye_mask_folder)))
 
         self.image_by_patient = []
-        if self.eye_mask_folder is not None:
+        if self.eye_mask_folder is None:
+            for image_folder in all_image_folders:
+                image_paths = sorted(glob('%s/*.jpg' % (image_folder)))
+                if len(image_paths) >= 2:
+                    self.image_by_patient.append(image_paths)
+        else:
             self.eye_mask_by_patient = []
             for image_folder, eye_mask_folder in zip(all_image_folders, all_eye_mask_folders):
                 assert image_folder.split('/')[-1] == eye_mask_folder.split('/')[-1]
@@ -57,11 +62,6 @@ class RetinaAREDSDataset(Dataset):
                 if len(image_paths) >= 2:
                     self.image_by_patient.append(image_paths)
                     self.eye_mask_by_patient.append(eye_mask_paths)
-        else:
-            for image_folder in all_image_folders:
-                image_paths = sorted(glob('%s/*.jpg' % (image_folder)))
-                if len(image_paths) >= 2:
-                    self.image_by_patient.append(image_paths)
 
     def __len__(self) -> int:
         return len(self.image_by_patient)
@@ -189,10 +189,10 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
                 # Apply the eye masks.
                 if images.shape[1] != 1:
                     eye_masks = np.repeat(eye_masks, images.shape[1], axis=1)
-                images[0][~eye_masks[0]] = 0
-                images[0][~eye_masks[1]] = 0
-                images[1][~eye_masks[0]] = 0
-                images[1][~eye_masks[1]] = 0
+                images[0][~eye_masks[0]] = images.min()
+                images[0][~eye_masks[1]] = images.min()
+                images[1][~eye_masks[0]] = images.min()
+                images[1][~eye_masks[1]] = images.min()
                 return images, timestamps, dice_coeff
             else:
                 return images, timestamps
@@ -263,7 +263,7 @@ def load_image(path: str, target_dim: Tuple[int] = None) -> np.array:
                          code=cv2.COLOR_BGR2RGB))
 
     # Normalize image.
-    image = (image / 255 * 2) - 1
+    image = (image / 255) * 2 - 1
 
     # Channel last to channel first to comply with Torch.
     image = np.moveaxis(image, -1, 0)
