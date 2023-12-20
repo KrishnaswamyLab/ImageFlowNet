@@ -128,11 +128,16 @@ def register(predict_config):
     '''
     Register the two sample images.
     '''
-    moving_path = '../../data/retina_areds/AREDS_2014_images_512x512/54792_LE/54792 10 F2 LE LS.jpg'
-    fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/54792_LE/54792 04 F2 LE LS.jpg'
+    # moving_path = '../../data/retina_areds/AREDS_2014_images_512x512/54792_LE/54792 10 F2 LE LS.jpg'
+    # fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/54792_LE/54792 04 F2 LE LS.jpg'
+    # moving_path = '../../data/retina_areds/AREDS_2014_images_512x512/52862_LE/52862 08 F2 LE LS.jpg'
+    # fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/52862_LE/52862 04 F2 LE LS.jpg'
+    moving_path = '../../data/retina_areds/AREDS_2014_images_512x512/51570_LE/51570 20 F2 LE LS.jpg'
+    fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/51570_LE/51570 03 F2 LE LS.jpg'
 
     # SuperRetina config
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cpu')
     # If show
     show_image = True
     show_keypoint = True

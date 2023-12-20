@@ -5,7 +5,7 @@ import cv2
 from tqdm import tqdm
 
 if __name__ == '__main__':
-    image_folder = '../data/retina_GA/AREDS_2014_images/'
+    image_folder = '../../data/retina_areds/AREDS_2014_images/'
 
     image_paths = sorted(glob(image_folder + '*/*.jpg'))
     out_shape = np.array((512, 512))

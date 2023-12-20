@@ -24,6 +24,8 @@ conda activate mip
 python -m pip install timm
 python -m pip install opencv-python
 python -m pip install git+https://github.com/facebookresearch/segment-anything.git
+
+conda install read-roi
 ```
 
 ## Usage

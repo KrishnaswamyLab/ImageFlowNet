@@ -139,13 +139,17 @@ def drawMatches(imageA, imageB, kpsA, kpsB, matches, status):
     return vis
 
 
-def register_and_save(predict_config, model, image_transformer, device, base_folder_source: str, base_folder_target: str):
+def register_and_save(predict_config, model, image_transformer, device,
+                      base_folder_source: str,
+                      base_mask_folder_source: str,
+                      base_folder_target: str,
+                      base_mask_folder_target: str):
     source_image_folders = sorted(glob(base_folder_source + '/*'))
 
     success, total = 0, 0
 
     for folder in tqdm(source_image_folders):
-        image_list = sorted(glob(folder + '/*.jpg'))
+        image_list = sorted(glob(folder + '/*.png'))
         if len(image_list) <= 2:
             # Can ignore this folder if there is fewer than 2 images.
             pass
@@ -154,13 +158,17 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
         batched_tensor = None
         image_height, image_width = None, None
         for _image_path in image_list:
-            _image = cv2.imread(_image_path, cv2.IMREAD_COLOR)
+            # Read the image as grayscale.
+            _image = cv2.imread(_image_path, cv2.IMREAD_GRAYSCALE)
+
             if image_height is not None:
                 assert image_height == _image.shape[0]
                 assert image_width == _image.shape[1]
             image_height, image_width = _image.shape[:2]
-            # Use the green channel as model input
-            _image = pre_processing(_image[:, :, 1])
+
+            # The image is grayscale.
+            assert len(_image.shape) == 2
+            _image = pre_processing(_image)
             _image = (_image * 255).astype(np.uint8)
             # scaled image size
             _tensor = image_transformer(Image.fromarray(_image))
@@ -205,6 +213,15 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
         os.makedirs(base_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
         cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + fixed_image_name, fixed_image)
 
+        # Also save the mask corresponding to the fixed image to the target folder.
+        unique_identifier = '_'.join(os.path.basename(fixed_image_name).split('_')[:3])
+        subject_folder_name = fixed_image_path.split('/')[-2]
+        fixed_mask_name_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
+        for fixed_mask_name in fixed_mask_name_list:
+            fixed_mask = cv2.imread(fixed_image_path, cv2.IMREAD_GRAYSCALE)
+            os.makedirs(base_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+            cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(fixed_mask_name), fixed_mask)
+
         # Now register every image in the series to that fixed image.
         for i, moving_image_path in enumerate(image_list):
             if i == fixed_idx:
@@ -219,20 +236,40 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
             if H_m is not None:
                 aligned_image = map_image(H_m, moving_image, fixed_image.shape)
                 cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + moving_image_name, aligned_image)
+
+                unique_identifier = '_'.join(os.path.basename(moving_image_name).split('_')[:3])
+                subject_folder_name = moving_image_path.split('/')[-2]
+                moving_mask_name_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
+                for moving_mask_name in moving_mask_name_list:
+                    moving_mask = cv2.imread(moving_mask_name, cv2.IMREAD_GRAYSCALE)
+                    aligned_mask = map_image(H_m, moving_mask, fixed_image.shape)
+                    os.makedirs(base_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+                    cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_mask_name), aligned_mask)
+
                 success += 1
+
             else:
                 print("Failed to align the two images! %s and %s" % (fixed_image_path, moving_image_path))
+
             total += 1
+
 
     print('Registration success rate: (%.2f%%) %d/%d' % (success/total*100, success, total))
 
 
-def register_longitudinal(predict_config, base_folder_source: str, base_folder_target: str):
+def register_longitudinal(predict_config,
+                          base_folder_source: str,
+                          base_mask_folder_source: str,
+                          base_folder_target: str,
+                          base_mask_folder_target: str):
     '''
     Register the longitudinal images.
 
-    For the case in `data/retina_areds/AREDS_2014_images_512x512/`,
+    For the case in `data/retina_ucsf/UCSF_images_512x512/`,
     each folder represents a series of longitudinal images to be registered.
+
+    We also need to apply the transformation to the corresponding masks in
+    `data/retina_ucsf/UCSF_masks_512x512/`,
     '''
 
     # SuperRetina config
@@ -255,7 +292,9 @@ def register_longitudinal(predict_config, base_folder_source: str, base_folder_t
                       image_transformer=image_transformer,
                       device=device,
                       base_folder_source=base_folder_source,
-                      base_folder_target=base_folder_target)
+                      base_mask_folder_source=base_mask_folder_source,
+                      base_folder_target=base_folder_target,
+                      base_mask_folder_target=base_mask_folder_target)
 
 
 if __name__ == '__main__':
@@ -270,9 +309,13 @@ if __name__ == '__main__':
     config['knn_thresh'] = 0.8
     config['num_match_thr'] = 15
 
-    base_folder_source = '../../data/retina_areds/AREDS_2014_images_512x512/'
-    base_folder_target = '../../data/retina_areds/AREDS_2014_images_aligned_512x512/'
+    base_folder_source = '../../data/retina_ucsf/UCSF_images_512x512/'
+    base_mask_folder_source = '../../data/retina_ucsf/UCSF_masks_512x512/'
+    base_folder_target = '../../data/retina_ucsf/UCSF_images_aligned_512x512/'
+    base_mask_folder_target = '../../data/retina_ucsf/UCSF_masks_aligned_512x512/'
 
     register_longitudinal(predict_config=config,
                           base_folder_source=base_folder_source,
-                          base_folder_target=base_folder_target)
+                          base_mask_folder_source=base_mask_folder_source,
+                          base_folder_target=base_folder_target,
+                          base_mask_folder_target=base_mask_folder_target)
