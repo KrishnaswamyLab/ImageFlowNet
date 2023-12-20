@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 class RetinaAREDSDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/',
+                 base_path: str = '../../data/retina_areds/',
                  image_folder: str = 'AREDS_2014_images_512x512/',
                  eye_mask_folder: str = None,
                  target_dim: Tuple[int] = (512, 512)):

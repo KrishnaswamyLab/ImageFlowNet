@@ -1,6 +1,7 @@
 from data_utils.extend import ExtendedDataset
 from data_utils.split import split_indices
 from datasets.retina_areds import RetinaAREDSDataset, RetinaAREDSSubset
+from datasets.retina_ucsf import RetinaUCSFDataset, RetinaUCSFSubset
 from datasets.synthetic import SyntheticDataset, SyntheticSubset
 from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
@@ -14,11 +15,19 @@ def prepare_dataset(config: AttributeHashmap):
                                      eye_mask_folder=config.eye_mask_folder,
                                      target_dim=config.target_dim)
         Subset = RetinaAREDSSubset
+
+    elif config.dataset_name == 'retina_ucsf':
+        dataset = RetinaUCSFDataset(base_path=config.dataset_path,
+                                    image_folder=config.image_folder,
+                                    target_dim=config.target_dim)
+        Subset = RetinaUCSFSubset
+
     elif config.dataset_name == 'synthetic':
         dataset = SyntheticDataset(base_path=config.dataset_path,
                                    image_folder=config.image_folder,
                                    target_dim=config.target_dim)
         Subset = SyntheticSubset
+
     else:
         raise ValueError(
             'Dataset not found. Check `dataset_name` in config yaml file.')

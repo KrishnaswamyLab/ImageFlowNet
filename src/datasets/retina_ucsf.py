@@ -8,6 +8,7 @@ from typing import Literal
 from glob import glob
 from typing import List, Tuple
 
+import os
 import cv2
 import numpy as np
 from torch.utils.data import Dataset
@@ -16,19 +17,11 @@ from torch.utils.data import Dataset
 class RetinaUCSFDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/',
-                 image_folder: str = 'AREDS_2014_images_512x512/',
+                 base_path: str = '../../data/retina_ucsf/',
+                 image_folder: str = 'UCSF_images_aligned_512x512/',
+                #  mask_folder: str = 'UCSF_masks_aligned_512x512/',
                  target_dim: Tuple[int] = (512, 512)):
         '''
-        Information regarding the dataset.
-
-        Files are named in the following format:
-            `ID visitNo F2 laterality.jpg`
-
-            ID: patient identification (5 digits)
-            visitNo: 00, 02, 04, etc (each visit represents 6 months interval)
-            laterality: LE LS = left eye; RE RS = right eye.
-
         The special thing here is that different patients may have different number of visits.
         - If a patient has fewer than 2 visits, we ignore the patient.
         - When a patient's index is queried, we return images from all visits of that patient.
@@ -47,7 +40,7 @@ class RetinaUCSFDataset(Dataset):
         self.image_by_patient = []
 
         for folder in all_image_folders:
-            paths = sorted(glob('%s/*.jpg' % (folder)))
+            paths = sorted(glob('%s/*.png' % (folder)))
             if len(paths) >= 2:
                 self.image_by_patient.append(paths)
 
@@ -59,17 +52,17 @@ class RetinaUCSFDataset(Dataset):
         return 3
 
 
-class RetinaAREDSSubset(RetinaAREDSDataset):
+class RetinaUCSFSubset(RetinaUCSFDataset):
 
     def __init__(self,
-                 main_dataset: RetinaAREDSDataset = None,
+                 main_dataset: RetinaUCSFDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs',
-                                              'array']):
+                 return_format: str = Literal['one_pair', 'all_pairs'],
+                 pos_neg_pairs: bool = False):
         '''
-        A subset of RetinaAREDSDataset.
+        A subset of RetinaUCSFDataset.
 
-        In RetinaAREDSDataset, we carefully isolated the (variable number of) images from
+        In RetinaUCSFDataset, we carefully isolated the (variable number of) images from
         different patients, and in train/val/test split we split the data by
         patient rather than by image.
 
@@ -77,8 +70,10 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
         In each set, we can safely unpack the images out.
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
+
+        pos_neg_pairs is a dummy input argument.
         '''
-        super(RetinaAREDSSubset, self).__init__()
+        super().__init__()
 
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format
@@ -102,9 +97,6 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
         elif self.return_format == 'all_pairs':
             # If we return all pairs of images per patient...
             return len(self.all_image_pairs)
-        elif self.return_format == 'array':
-            # If we return all images as an array per patient...
-            return len(self.image_by_patient)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
         if self.return_format == 'one_pair':
@@ -126,14 +118,6 @@ class RetinaAREDSSubset(RetinaAREDSDataset):
                 load_image(p, target_dim=self.target_dim) for p in queried_pair
             ])
             timestamps = np.array([get_time(p) for p in queried_pair])
-
-        elif self.return_format == 'array':
-            queried_patient = self.image_by_patient[idx]
-            images = np.array([
-                load_image(p, target_dim=self.target_dim)
-                for p in queried_patient
-            ])
-            timestamps = np.array([get_time(p) for p in queried_patient])
 
         return images, timestamps
 
@@ -161,7 +145,7 @@ def load_image(path: str, target_dim: Tuple[int] = None) -> np.array:
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
-    time = path.split()[1]
+    time = os.path.basename(path).split('_')[2]
     # Shall be 2 or 3 digits
     assert len(time) in [2, 3]
     time = float(time)
