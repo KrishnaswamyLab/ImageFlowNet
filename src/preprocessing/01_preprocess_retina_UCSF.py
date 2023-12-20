@@ -98,6 +98,8 @@ if __name__ == '__main__':
                 mask = polygon_to_mask(_roi_item['x'], _roi_item['y'], raw_image_shape)
                 mask = resize_and_pad(mask, out_shape_mask)
 
+            mask = np.uint8(mask * 255)
+
             out_path_mask = pth.replace('Images/Raw Images/',
                                         'UCSF_masks_512x512/').replace(
                                             os.path.basename(pth), roi_save_name + '_mask.png')
@@ -125,6 +127,7 @@ if __name__ == '__main__':
                     mask = curr_mask
                 else:
                     mask = np.logical_or(mask, curr_mask)
+
             mask = np.uint8(mask * 255)
 
             out_path_mask = pth.replace('Images/Raw Images/',
