@@ -216,11 +216,11 @@ def register_and_save(predict_config, model, image_transformer, device,
         # Also save the mask corresponding to the fixed image to the target folder.
         unique_identifier = '_'.join(os.path.basename(fixed_image_name).split('_')[:3])
         subject_folder_name = fixed_image_path.split('/')[-2]
-        fixed_mask_name_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
-        for fixed_mask_name in fixed_mask_name_list:
-            fixed_mask = cv2.imread(fixed_image_path, cv2.IMREAD_GRAYSCALE)
+        fixed_mask_path_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
+        for fixed_mask_path in fixed_mask_path_list:
+            fixed_mask = cv2.imread(fixed_mask_path, cv2.IMREAD_GRAYSCALE)
             os.makedirs(base_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
-            cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(fixed_mask_name), fixed_mask)
+            cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(fixed_mask_path), fixed_mask)
 
         # Now register every image in the series to that fixed image.
         for i, moving_image_path in enumerate(image_list):
@@ -239,12 +239,12 @@ def register_and_save(predict_config, model, image_transformer, device,
 
                 unique_identifier = '_'.join(os.path.basename(moving_image_name).split('_')[:3])
                 subject_folder_name = moving_image_path.split('/')[-2]
-                moving_mask_name_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
-                for moving_mask_name in moving_mask_name_list:
-                    moving_mask = cv2.imread(moving_mask_name, cv2.IMREAD_GRAYSCALE)
+                moving_mask_path_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
+                for moving_mask_path in moving_mask_path_list:
+                    moving_mask = cv2.imread(moving_mask_path, cv2.IMREAD_GRAYSCALE)
                     aligned_mask = map_image(H_m, moving_mask, fixed_image.shape)
                     os.makedirs(base_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
-                    cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_mask_name), aligned_mask)
+                    cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_mask_path), aligned_mask)
 
                 success += 1
 
