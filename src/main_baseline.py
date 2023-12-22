@@ -159,7 +159,7 @@ def train(config: AttributeHashmap):
         lr_scheduler.step()
 
         log('Train [%s/%s] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, train_loss_pred, train_loss_recon, train_recon_psnr,
+            % (epoch_idx + 1, config.max_epochs, train_loss_recon, train_loss_pred, train_recon_psnr,
                train_recon_ssim, train_pred_psnr, train_pred_ssim),
             filepath=config.log_dir,
             to_console=False)
@@ -209,15 +209,14 @@ def train(config: AttributeHashmap):
             filepath=config.log_dir,
             to_console=False)
 
-        val_psnr = (val_recon_psnr + val_pred_psnr) / 2
-        if val_psnr > best_val_psnr:
-            best_val_psnr = val_psnr
+        if val_pred_psnr > best_val_psnr:
+            best_val_psnr = val_pred_psnr
             model.save_weights(config.model_save_path)
             log('%s: Model weights successfully saved.' % config.model,
                 filepath=config.log_dir,
                 to_console=False)
 
-        if early_stopper.step(val_psnr):
+        if early_stopper.step(val_pred_psnr):
             log('Early stopping criterion met. Ending training.',
                 filepath=config.log_dir,
                 to_console=True)

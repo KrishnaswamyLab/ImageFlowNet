@@ -55,6 +55,8 @@ def prepare_dataset(config: AttributeHashmap):
                       pos_neg_pairs=config.pos_neg_pairs)
 
     min_batch_per_epoch = 5
+    if 'max_training_samples' in config.keys():
+        min_batch_per_epoch = config.max_training_samples
     desired_len = max(len(train_set), min_batch_per_epoch)
     train_set = ExtendedDataset(dataset=train_set, desired_len=desired_len)
 

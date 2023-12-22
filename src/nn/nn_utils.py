@@ -8,22 +8,20 @@ class ODEfunc(torch.nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.relu = torch.nn.ReLU(inplace=True)
-        self.norm1 = torch.nn.GroupNorm(min(32, dim), dim)
+        self.norm1 = torch.nn.InstanceNorm2d(dim)
         self.conv1 = ConcatConv2d(dim, dim, 3, 1, 1)
-        self.norm2 = torch.nn.GroupNorm(min(32, dim), dim)
+        self.norm2 = torch.nn.InstanceNorm2d(dim)
         self.conv2 = ConcatConv2d(dim, dim, 3, 1, 1)
-        self.norm3 = torch.nn.GroupNorm(min(32, dim), dim)
         self.nfe = 0
 
     def forward(self, t, x):
         self.nfe += 1
         out = self.norm1(x)
-        out = self.relu(out)
         out = self.conv1(t, out)
-        out = self.norm2(out)
         out = self.relu(out)
+        out = self.norm2(out)
         out = self.conv2(t, out)
-        out = self.norm3(out)
+        out = self.relu(out)
         return out
 
 
