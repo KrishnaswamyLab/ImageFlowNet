@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import torch
 import os
+import cv2
 import yaml
 from data_utils.prepare_dataset import prepare_dataset
 from nn.scheduler import LinearWarmupCosineAnnealingLR
@@ -59,8 +60,6 @@ def train(config: AttributeHashmap):
     os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
     os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
 
-    if num_image_channel == 1:
-        plt.rcParams['image.cmap'] = 'gray'
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
@@ -200,7 +199,8 @@ def train(config: AttributeHashmap):
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
                         save_folder_fig_log, str(epoch_idx).zfill(5))
-                    plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+                    plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
+                                      x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
             del segmentor
 
@@ -360,19 +360,49 @@ def numpy_variables(*tensors: torch.Tensor) -> Tuple[np.array]:
     '''
     return [_tensor.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0) for _tensor in tensors]
 
+def gray_to_rgb(*tensors: torch.Tensor) -> Tuple[np.array]:
+    rgb_list = []
+    for item in tensors:
+        assert len(item.shape) in [2, 3]
+        if len(item.shape) == 3:
+            assert item.shape[-1] == 1
+            rgb_list.append(np.repeat(item, 3, axis=-1))
+        else:
+            rgb_list.append(np.repeat(item[..., None], 3, axis=-1))
 
-def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:
+    return rgb_list
+
+def plot_contour(image, label):
+    true_contours, _hierarchy = cv2.findContours(np.uint8(label),
+                                                 cv2.RETR_TREE,
+                                                 cv2.CHAIN_APPROX_NONE)
+    for contour in true_contours:
+        cv2.drawContours(image, contour, -1, (0.0, 1.0, 0.0), 2)
+
+def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str,
+                      x0_pred_seg=None, x0_true_seg=None, xT_pred_seg=None, xT_true_seg=None) -> None:
     fig_sbs = plt.figure(figsize=(12, 10))
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
+    assert len(x0_true.shape) in [2, 3]
+    if len(x0_true.shape) == 2 or x0_true.shape[-1] == 1:
+        x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred = \
+            gray_to_rgb(x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred)
+
     ax = fig_sbs.add_subplot(2, 3, 1)
-    ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
+    image = np.clip((x0_true + 1) / 2, 0, 1)
+    if x0_true_seg is not None:
+        plot_contour(image, x0_true_seg)
+    ax.imshow(image)
     ax.set_title('GT, time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 3, 4)
-    ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
+    image = np.clip((xT_true + 1) / 2, 0, 1)
+    if xT_true_seg is not None:
+        plot_contour(image, xT_true_seg)
+    ax.imshow(image)
     ax.set_title('GT, time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
@@ -389,12 +419,18 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
     ax.set_aspect(aspect_ratio)
 
     ax = fig_sbs.add_subplot(2, 3, 3)
-    ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
+    image = np.clip((x0_pred + 1) / 2, 0, 1)
+    if x0_pred_seg is not None:
+        plot_contour(image, x0_pred_seg)
+    ax.imshow(image)
     ax.set_title('Pred, input time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 3, 6)
-    ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
+    image = np.clip((xT_pred + 1) / 2, 0, 1)
+    if xT_pred_seg is not None:
+        plot_contour(image, xT_pred_seg)
+    ax.imshow(image)
     ax.set_title('Pred, input time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
