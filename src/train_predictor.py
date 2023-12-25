@@ -8,6 +8,7 @@ import yaml
 from data_utils.prepare_dataset import prepare_dataset
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
+import monai
 
 from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
@@ -16,7 +17,7 @@ from nn.unet_ode import ODEUNet
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
-from utils.metrics import psnr, ssim
+from utils.metrics import psnr, ssim, dice_coeff
 from utils.parse import parse_settings
 from utils.seed import seed_everything
 
@@ -65,13 +66,7 @@ def train(config: AttributeHashmap):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
         model.train()
         optimizer.zero_grad()
-        for iter_idx, _values in enumerate(tqdm(train_set)):
-            if config.eye_mask_folder is None:
-                (images, timestamps) = _values
-            else:
-                (images, timestamps, dice_coeff) = _values
-                if dice_coeff < config.dice_thr:
-                    continue
+        for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
             if 'max_training_samples' in config:
                 if iter_idx > config.max_training_samples:
@@ -125,20 +120,6 @@ def train(config: AttributeHashmap):
             loss_ = loss_pred / backprop_freq
             loss_.backward()
 
-            # x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-            # x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-
-            # assert torch.diff(t_list).item() > 0
-            # x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-            # x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-            # loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
-            # train_loss_recon += loss_recon.item()
-            # loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
-            # train_loss_pred += loss_pred.item()
-
-            # loss_ = (loss_recon + loss_pred) / backprop_freq
-            # loss_.backward()
-
             # Simulate `config.batch_size` by batched optimizer update.
             if iter_idx % config.batch_size == config.batch_size - 1:
                 optimizer.step()
@@ -169,17 +150,25 @@ def train(config: AttributeHashmap):
             to_console=False)
 
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
+        val_seg_dice_x0, val_seg_dice_xT = 0, 0
         model.eval()
         with torch.no_grad():
-            for iter_idx, _values in enumerate(tqdm(val_set)):
+            segmentor = torch.nn.Sequential(
+                monai.networks.nets.DynUNet(
+                    spatial_dims=2,
+                    in_channels=1,
+                    out_channels=1,
+                    kernel_size=[5, 5, 5, 5],
+                    filters=[16, 32, 64, 128],
+                    strides=[1, 1, 1, 1],
+                    upsample_kernel_size=[1, 1, 1, 1]),
+                torch.nn.Sigmoid()).to(device)
+            segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+            segmentor.eval()
+
+            for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
-                if config.eye_mask_folder is None:
-                    (images, timestamps) = _values
-                else:
-                    (images, timestamps, dice_coeff) = _values
-                    if dice_coeff < config.dice_thr:
-                        continue
 
                 # images: [1, 2, C, H, W], containing [x_start, x_end]
                 # timestamps: [1, 2], containing [t_start, t_end]
@@ -191,25 +180,37 @@ def train(config: AttributeHashmap):
                 x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
                 x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-                x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-                    numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+                x_start_seg = segmentor(x_start) > 0.5
+                x_end_seg = segmentor(x_end) > 0.5
+                x_start_pred_seg = segmentor(x_start_pred) > 0.5
+                x_end_pred_seg = segmentor(x_end_pred) > 0.5
+
+                x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
+                    numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
+                                    x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
 
                 val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
                 val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
                 val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
                 val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
+                val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
+                val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
+
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
                         save_folder_fig_log, str(epoch_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
-        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = \
-            [item / len(val_set.dataset) for item in (val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim)]
+            del segmentor
 
-        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT = \
+            [item / len(val_set.dataset) for item in (
+                val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT)]
+
+        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(true,pred) x0: %.3f, Dice(true,pred) xT: %.3f'
             % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-               val_recon_ssim, val_pred_psnr, val_pred_ssim),
+               val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT),
             filepath=config.log_dir,
             to_console=False)
 
@@ -353,24 +354,11 @@ def convert_variables(images: torch.Tensor,
     return x_start, x_end, t_list
 
 
-def numpy_variables(x_start: torch.Tensor,
-                    x_start_recon: torch.Tensor,
-                    x_start_pred: torch.Tensor,
-                    x_end: torch.Tensor,
-                    x_end_recon: torch.Tensor,
-                    x_end_pred: torch.Tensor) -> Tuple[np.array]:
+def numpy_variables(*tensors: torch.Tensor) -> Tuple[np.array]:
     '''
     Some repetitive numpy casting of variables.
     '''
-    x0_true = x_start.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    x0_recon = x_start_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    x0_pred = x_start_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-
-    xT_true = x_end.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    xT_recon = x_end_recon.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-    xT_pred = x_end_pred.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0)
-
-    return x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred
+    return [_tensor.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0) for _tensor in tensors]
 
 
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str) -> None:

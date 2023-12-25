@@ -143,7 +143,8 @@ def register_and_save(predict_config, model, image_transformer, device,
                       base_folder_source: str,
                       base_mask_folder_source: str,
                       base_folder_target: str,
-                      base_mask_folder_target: str):
+                      base_mask_folder_target: str,
+                      base_fg_mask_folder_target: str):
     source_image_folders = sorted(glob(base_folder_source + '/*'))
 
     success, total = 0, 0
@@ -213,6 +214,15 @@ def register_and_save(predict_config, model, image_transformer, device,
         os.makedirs(base_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
         cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + fixed_image_name, fixed_image)
 
+        # Create and save the foreground mask.
+        fixed_fg_mask_path = fixed_image_path.replace(base_folder_source, base_fg_mask_folder_target).replace('.png', '_foreground_mask.png')
+        fixed_fg_mask = np.uint8(np.ones_like(fixed_image) * 255)
+        if len(fixed_fg_mask.shape) == 3:
+            assert fixed_fg_mask.shape[-1] in [1, 3]
+            fixed_fg_mask = fixed_fg_mask[:, :, 0]
+        os.makedirs(base_fg_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+        cv2.imwrite(base_fg_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(fixed_fg_mask_path), fixed_fg_mask)
+
         # Also save the mask corresponding to the fixed image to the target folder.
         unique_identifier = '_'.join(os.path.basename(fixed_image_name).split('_')[:3])
         subject_folder_name = fixed_image_path.split('/')[-2]
@@ -239,10 +249,22 @@ def register_and_save(predict_config, model, image_transformer, device,
 
                 unique_identifier = '_'.join(os.path.basename(moving_image_name).split('_')[:3])
                 subject_folder_name = moving_image_path.split('/')[-2]
+
+                moving_fg_mask_path = moving_image_path.replace(base_folder_source, base_fg_mask_folder_target).replace('.png', '_foreground_mask.png')
+                moving_fg_mask = np.uint8(np.ones_like(moving_image) * 255)
+                if len(moving_fg_mask.shape) == 3:
+                    assert moving_fg_mask.shape[-1] in [1, 3]
+                    moving_fg_mask = moving_fg_mask[:, :, 0]
+                aligned_fg_mask = map_image(H_m, moving_fg_mask, fixed_image.shape)
+                aligned_fg_mask = np.uint8((aligned_fg_mask > 128) * 255)
+                os.makedirs(base_fg_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+                cv2.imwrite(base_fg_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_fg_mask_path), aligned_fg_mask)
+
                 moving_mask_path_list = glob(base_mask_folder_source + subject_folder_name + '/' + unique_identifier + '*_mask.png')
                 for moving_mask_path in moving_mask_path_list:
                     moving_mask = cv2.imread(moving_mask_path, cv2.IMREAD_GRAYSCALE)
                     aligned_mask = map_image(H_m, moving_mask, fixed_image.shape)
+                    aligned_mask = np.uint8((aligned_mask > 128) * 255)
                     os.makedirs(base_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
                     cv2.imwrite(base_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_mask_path), aligned_mask)
 
@@ -261,7 +283,8 @@ def register_longitudinal(predict_config,
                           base_folder_source: str,
                           base_mask_folder_source: str,
                           base_folder_target: str,
-                          base_mask_folder_target: str):
+                          base_mask_folder_target: str,
+                          base_fg_mask_folder_target: str):
     '''
     Register the longitudinal images.
 
@@ -270,6 +293,9 @@ def register_longitudinal(predict_config,
 
     We also need to apply the transformation to the corresponding masks in
     `data/retina_ucsf/UCSF_masks_512x512/`,
+
+    Additionally, we save the "foreground masks" to `data/retina_ucsf/UCSF_FG_masks_aligned_512x512/`.
+    These foreground masks will be used for cropping or impainting.
     '''
 
     # SuperRetina config
@@ -294,7 +320,8 @@ def register_longitudinal(predict_config,
                       base_folder_source=base_folder_source,
                       base_mask_folder_source=base_mask_folder_source,
                       base_folder_target=base_folder_target,
-                      base_mask_folder_target=base_mask_folder_target)
+                      base_mask_folder_target=base_mask_folder_target,
+                      base_fg_mask_folder_target=base_fg_mask_folder_target)
 
 
 if __name__ == '__main__':
@@ -313,9 +340,11 @@ if __name__ == '__main__':
     base_mask_folder_source = '../../data/retina_ucsf/UCSF_masks_512x512/'
     base_folder_target = '../../data/retina_ucsf/UCSF_images_aligned_512x512/'
     base_mask_folder_target = '../../data/retina_ucsf/UCSF_masks_aligned_512x512/'
+    base_fg_mask_folder_target = '../../data/retina_ucsf/UCSF_FG_masks_aligned_512x512/'
 
     register_longitudinal(predict_config=config,
                           base_folder_source=base_folder_source,
                           base_mask_folder_source=base_mask_folder_source,
                           base_folder_target=base_folder_target,
-                          base_mask_folder_target=base_mask_folder_target)
+                          base_mask_folder_target=base_mask_folder_target,
+                          base_fg_mask_folder_target=base_fg_mask_folder_target)

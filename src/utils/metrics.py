@@ -1,5 +1,5 @@
 import numpy as np
-from skimage.metrics import structural_similarity
+from skimage.metrics import hausdorff_distance, structural_similarity
 
 
 def psnr(image1, image2, max_value=2):
@@ -42,3 +42,21 @@ def ssim(image1: np.array, image2: np.array, data_range=2, **kwargs) -> float:
                                  channel_axis=channel_axis,
                                  win_size=win_size,
                                  **kwargs)
+
+
+def dice_coeff(label_pred: np.array, label_true: np.array) -> float:
+    epsilon = 1e-12
+    intersection = np.logical_and(label_pred, label_true).sum()
+    dice = (2 * intersection + epsilon) / (label_pred.sum() +
+                                           label_true.sum() + epsilon)
+    return dice
+
+
+def hausdorff(label_pred: np.array, label_true: np.array) -> float:
+    if np.sum(label_pred) == 0 or np.sum(label_true) == 0:
+        # If `label_pred` or `label_true` is all zeros,
+        # return the max Euclidean distance.
+        H, W = label_true.shape
+        return np.sqrt((H**2 + W**2))
+    else:
+        return hausdorff_distance(label_pred, label_true)
