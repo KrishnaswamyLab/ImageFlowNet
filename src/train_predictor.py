@@ -29,6 +29,8 @@ def train(config: AttributeHashmap):
     train_set, val_set, test_set, num_image_channel = \
         prepare_dataset(config=config)
 
+    log('Using device: %s' % device, to_console=True)
+
     # Build the model
     try:
         model = globals()[config.model](num_filters=config.num_filters,
@@ -149,7 +151,7 @@ def train(config: AttributeHashmap):
             to_console=False)
 
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
-        val_seg_dice_x0, val_seg_dice_xT = 0, 0
+        val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
         model.eval()
         with torch.no_grad():
             segmentor = torch.nn.Sequential(
@@ -195,6 +197,7 @@ def train(config: AttributeHashmap):
 
                 val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
                 val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
+                val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
 
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
@@ -204,13 +207,13 @@ def train(config: AttributeHashmap):
 
             del segmentor
 
-        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT = \
+        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
             [item / len(val_set.dataset) for item in (
-                val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT)]
+                val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
 
-        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(true,pred) x0: %.3f, Dice(true,pred) xT: %.3f'
+        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
             % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-               val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT),
+               val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
             filepath=config.log_dir,
             to_console=False)
 
@@ -381,7 +384,7 @@ def plot_contour(image, label):
 
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str,
                       x0_pred_seg=None, x0_true_seg=None, xT_pred_seg=None, xT_true_seg=None) -> None:
-    fig_sbs = plt.figure(figsize=(12, 10))
+    fig_sbs = plt.figure(figsize=(20, 10))
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
@@ -390,7 +393,44 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
         x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred = \
             gray_to_rgb(x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred)
 
-    ax = fig_sbs.add_subplot(2, 3, 1)
+    # First column: Ground Truth.
+    ax = fig_sbs.add_subplot(2, 5, 1)
+    ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
+    ax.set_title('GT, time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 5, 6)
+    ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
+    ax.set_title('GT, time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    # Second column: Reconstruction.
+    ax = fig_sbs.add_subplot(2, 5, 2)
+    ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
+    ax.set_title('Recon, time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 5, 7)
+    ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
+    ax.set_title('Recon, time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    # Third column: Prediction.
+    ax = fig_sbs.add_subplot(2, 5, 3)
+    ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
+    ax.set_title('Pred, input time: %s' % t_list[1].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+    ax = fig_sbs.add_subplot(2, 5, 8)
+    ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
+    ax.set_title('Pred, input time: %s' % t_list[0].item())
+    ax.set_axis_off()
+    ax.set_aspect(aspect_ratio)
+
+    # Fourth column: Ground Truth with segmentation.
+    ax = fig_sbs.add_subplot(2, 5, 4)
     image = np.clip((x0_true + 1) / 2, 0, 1)
     if x0_true_seg is not None:
         plot_contour(image, x0_true_seg)
@@ -398,7 +438,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
     ax.set_title('GT, time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 4)
+    ax = fig_sbs.add_subplot(2, 5, 9)
     image = np.clip((xT_true + 1) / 2, 0, 1)
     if xT_true_seg is not None:
         plot_contour(image, xT_true_seg)
@@ -407,18 +447,8 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
-    ax = fig_sbs.add_subplot(2, 3, 2)
-    ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
-    ax.set_title('Recon, time: %s' % t_list[0].item())
-    ax.set_axis_off()
-    ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 5)
-    ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
-    ax.set_title('Recon, time: %s' % t_list[1].item())
-    ax.set_axis_off()
-    ax.set_aspect(aspect_ratio)
-
-    ax = fig_sbs.add_subplot(2, 3, 3)
+    # Fifth column: Prediction with segmentation.
+    ax = fig_sbs.add_subplot(2, 5, 5)
     image = np.clip((x0_pred + 1) / 2, 0, 1)
     if x0_pred_seg is not None:
         plot_contour(image, x0_pred_seg)
@@ -426,7 +456,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
     ax.set_title('Pred, input time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
-    ax = fig_sbs.add_subplot(2, 3, 6)
+    ax = fig_sbs.add_subplot(2, 5, 10)
     image = np.clip((xT_pred + 1) / 2, 0, 1)
     if xT_pred_seg is not None:
         plot_contour(image, xT_pred_seg)

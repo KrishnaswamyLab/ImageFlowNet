@@ -19,16 +19,22 @@ wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
 We developed the codebase in a miniconda environment.
 How we created the conda environment:
 ```
-conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c nvidia -c anaconda -c conda-forge
+# Optional: Update to libmamba solver.
+conda update -n base conda
+conda install -n base conda-libmamba-solver
+conda config --set solver libmamba
+
+conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -c nvidia -c anaconda -c conda-forge
 conda activate mip
+conda install scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c anaconda -c conda-forge
+conda install read-roi -c conda-forge
+python -m pip install -U albumentations
 python -m pip install timm
 python -m pip install opencv-python
 python -m pip install git+https://github.com/facebookresearch/segment-anything.git
 python -m pip install monai
-python -m pip install albumentations
-conda install -c conda-forge gcc=12.1.0  # If you see version `GLIBCXX_3.4.30' not found.
-
-conda install read-roi
+python -m pip install torchdiffeq
+<!-- conda install -c conda-forge gcc=12.1.0  # If you see version `GLIBCXX_3.4.30' not found. -->
 ```
 
 ## Usage
