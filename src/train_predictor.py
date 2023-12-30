@@ -10,6 +10,7 @@ from data_utils.prepare_dataset import prepare_dataset
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
 import monai
+import albumentations as A
 
 from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
@@ -26,8 +27,16 @@ from utils.seed import seed_everything
 def train(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
+
+    train_transform = A.Compose(
+        [
+            A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=30, p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
+        ]
+    )
+    transforms_list = [train_transform, None, None]
     train_set, val_set, test_set, num_image_channel = \
-        prepare_dataset(config=config)
+        prepare_dataset(config=config, transforms_list=transforms_list)
 
     log('Using device: %s' % device, to_console=True)
 
@@ -58,10 +67,8 @@ def train(config: AttributeHashmap):
     best_val_psnr = 0
     backprop_freq = config.batch_size
 
-    save_folder_fig_log = '%s/log/' % config.output_save_path
-    os.makedirs(save_folder_fig_log + 'train/', exist_ok=True)
-    os.makedirs(save_folder_fig_log + 'val/', exist_ok=True)
-
+    os.makedirs(config.save_folder + 'train/', exist_ok=True)
+    os.makedirs(config.save_folder + 'val/', exist_ok=True)
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
@@ -136,7 +143,7 @@ def train(config: AttributeHashmap):
 
             if shall_plot:
                 save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
-                    save_folder_fig_log, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+                    config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
                 plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
         train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
@@ -201,7 +208,7 @@ def train(config: AttributeHashmap):
 
                 if iter_idx == 10:
                     save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
-                        save_folder_fig_log, str(epoch_idx).zfill(5))
+                        config.save_folder, str(epoch_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
                                       x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 

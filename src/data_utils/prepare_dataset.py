@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
 
 
-def prepare_dataset(config: AttributeHashmap):
+def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, None]):
     # Read dataset.
     if config.dataset_name == 'retina_areds':
         dataset = RetinaAREDSDataset(base_path=config.dataset_path,
@@ -41,17 +41,21 @@ def prepare_dataset(config: AttributeHashmap):
     train_indices, val_indices, test_indices = \
         split_indices(indices=indices, splits=ratios, random_seed=config.random_seed)
 
+    transforms_train, transforms_val, transforms_test = transforms_list
     train_set = Subset(main_dataset=dataset,
                        subset_indices=train_indices,
                        return_format=config.return_format,
+                       transforms=transforms_train,
                        pos_neg_pairs=config.pos_neg_pairs)
     val_set = Subset(main_dataset=dataset,
                      subset_indices=val_indices,
                      return_format='all_pairs',
+                     transforms=transforms_val,
                      pos_neg_pairs=config.pos_neg_pairs)
     test_set = Subset(main_dataset=dataset,
                       subset_indices=test_indices,
                       return_format='all_pairs',
+                      transforms=transforms_test,
                       pos_neg_pairs=config.pos_neg_pairs)
 
     min_sample_per_epoch = 5

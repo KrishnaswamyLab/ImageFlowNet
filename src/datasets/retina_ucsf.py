@@ -84,6 +84,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
                  main_dataset: RetinaUCSFDataset = None,
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs'],
+                 transforms = None,
                  pos_neg_pairs: bool = False):
         '''
         A subset of RetinaUCSFDataset.
@@ -103,6 +104,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
 
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format
+        self.transforms = transforms
 
         self.image_by_patient = [
             main_dataset.image_by_patient[i] for i in subset_indices
@@ -134,16 +136,28 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
                 for i in pair_indices[np.random.choice(len(pair_indices))]
             ]
             images = np.array([
-                load_image(p, target_dim=self.target_dim) for p in sampled_pair
+                load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
             ])
             timestamps = np.array([get_time(p) for p in sampled_pair])
 
         elif self.return_format == 'all_pairs':
             queried_pair = self.all_image_pairs[idx]
             images = np.array([
-                load_image(p, target_dim=self.target_dim) for p in queried_pair
+                load_image(p, target_dim=self.target_dim, normalize=False) for p in queried_pair
             ])
             timestamps = np.array([get_time(p) for p in queried_pair])
+
+        assert len(images) == 2
+        image1, image2 = images[0], images[1]
+        if self.transforms is not None:
+            # NOTE: currently a hack. Maybe need to fix later.
+            transformed = self.transforms(image=image1, mask=image2)
+            image1 = transformed["image"]
+            image2 = transformed["mask"]
+
+        image1 = image1 / 255 * 2 - 1
+        image2 = image2 / 255 * 2 - 1
+        images = np.vstack((image1[None, ...], image2[None, ...]))
 
         return images, timestamps
 

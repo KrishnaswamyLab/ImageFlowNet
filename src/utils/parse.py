@@ -1,5 +1,6 @@
 import ast
 import os
+from glob import glob
 
 from utils.attribute_hashmap import AttributeHashmap
 from utils.log_util import log
@@ -21,14 +22,23 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True):
         if type(config[key]) == str and '$ROOT' in config[key]:
             config[key] = config[key].replace('$ROOT', ROOT)
 
+    # Initialize save folder.
+    existing_runs = glob(config.output_save_path + '/run_*/')
+    if len(existing_runs) > 0:
+        run_counts = [int(item.split('/')[-2].split('run_')[1]) for item in existing_runs]
+        run_count = max(run_counts) + 1
+    else:
+        run_count = 1
+
+    config.save_folder = '%s/run_%d/' % (config.output_save_path, run_count)
+
     # Initialize log file.
-    config.log_dir = config.log_folder + '/' + \
-        os.path.basename(
-            config.config_file_name).replace('.yaml', '') + '_log.txt'
+    config.log_dir = config.save_folder + 'log.txt'
     if log_settings:
         log_str = 'Config: \n'
         for key in config.keys():
             log_str += '%s: %s\n' % (key, config[key])
         log_str += '\nTraining History:'
         log(log_str, filepath=config.log_dir, to_console=True)
+
     return config
