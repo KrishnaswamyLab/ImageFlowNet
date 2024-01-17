@@ -14,6 +14,20 @@ import numpy as np
 from torch.utils.data import Dataset
 
 
+def normalize_image(image: np.array) -> np.array:
+    '''
+    Normalize an image by z-score (zero mean, 0.5 variance), then clipped to [-1, 1].
+    '''
+    voxel_ndarray = image.copy()
+    voxel_ndarray = voxel_ndarray.flatten()
+    upper_bound = np.percentile(voxel_ndarray, 99.95)
+    lower_bound = np.percentile(voxel_ndarray, 00.05)
+    image = np.clip(image, lower_bound, upper_bound)
+    image = (image - image.mean()) / (max(2 * image.std(), 1e-8))
+    image = np.clip(image, -1.0, 1.0)
+    return image
+
+
 def load_image(path: str, target_dim: Tuple[int] = None, normalize: bool = True) -> np.array:
     ''' Load image as numpy array from a path string.'''
     if target_dim is not None:
@@ -24,7 +38,7 @@ def load_image(path: str, target_dim: Tuple[int] = None, normalize: bool = True)
 
     # Normalize image.
     if normalize:
-        image = (image / 255 * 2) - 1
+        image = normalize_image(image)
 
     # Add the channel dimension to comply with Torch.
     image = image[None, :, :]
@@ -85,6 +99,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs'],
                  transforms = None,
+                 min_time_diff: int = 6,
                  pos_neg_pairs: bool = False):
         '''
         A subset of RetinaUCSFDataset.
@@ -98,13 +113,16 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
 
-        pos_neg_pairs is a dummy input argument.
+        min_time_diff is only used if `return_format` is `one_pair`.
+
+        pos_neg_pairs is a dummy input argument for backward compatibility.
         '''
         super().__init__()
 
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format
         self.transforms = transforms
+        self.min_time_diff = min_time_diff
 
         self.image_by_patient = [
             main_dataset.image_by_patient[i] for i in subset_indices
@@ -131,10 +149,21 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             image_list = self.image_by_patient[idx]
             pair_indices = list(
                 itertools.combinations(np.arange(len(image_list)), r=2))
-            sampled_pair = [
-                image_list[i]
-                for i in pair_indices[np.random.choice(len(pair_indices))]
-            ]
+
+            # Find valid time pairs that are far enough from each other.
+            all_times = np.array([get_time(i) for i in image_list])
+            time_diff = np.diff(all_times)
+            if min(time_diff) >= self.min_time_diff:
+                # Select from the far-enough time pairs.
+                valid_locs = np.where(time_diff >= self.min_time_diff)[0]
+                selected_loc = np.random.choice(valid_locs)
+                time_pair_far_loc = [selected_loc, selected_loc + 1]
+            else:
+                # Select the farthest time pair.
+                time_pair_far_loc = [0, -1]
+
+            sampled_pair = [image_list[i] for i in time_pair_far_loc]
+
             images = np.array([
                 load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
             ])
@@ -150,13 +179,12 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         assert len(images) == 2
         image1, image2 = images[0], images[1]
         if self.transforms is not None:
-            # NOTE: currently a hack. Maybe need to fix later.
-            transformed = self.transforms(image=image1, mask=image2)
+            transformed = self.transforms(image=image1, image_other=image2)
             image1 = transformed["image"]
-            image2 = transformed["mask"]
+            image2 = transformed["image_other"]
 
-        image1 = image1 / 255 * 2 - 1
-        image2 = image2 / 255 * 2 - 1
+        image1 = normalize_image(image1)
+        image2 = normalize_image(image2)
         images = np.vstack((image1[None, ...], image2[None, ...]))
 
         return images, timestamps

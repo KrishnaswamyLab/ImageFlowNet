@@ -41,4 +41,8 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True):
         log_str += '\nTraining History:'
         log(log_str, filepath=config.log_dir, to_console=True)
 
+    config.model_save_path = \
+        os.path.dirname(config.model_save_path) + '/run_%d/' % run_count + os.path.basename(config.model_save_path)
+    os.makedirs(os.path.dirname(config.model_save_path), exist_ok=True)
+
     return config

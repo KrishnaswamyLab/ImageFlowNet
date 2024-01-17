@@ -7,7 +7,6 @@ import os
 import cv2
 import yaml
 from data_utils.prepare_dataset import prepare_dataset
-from nn.scheduler import LinearWarmupCosineAnnealingLR
 from tqdm import tqdm
 import monai
 import albumentations as A
@@ -30,9 +29,13 @@ def train(config: AttributeHashmap):
 
     train_transform = A.Compose(
         [
-            A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=30, p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
-        ]
+            A.HorizontalFlip(p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+        ],
+        additional_targets={
+            'image_other': 'image',
+        }
     )
     transforms_list = [train_transform, None, None]
     train_set, val_set, test_set, num_image_channel = \
@@ -53,19 +56,18 @@ def train(config: AttributeHashmap):
     model.init_params()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    lr_scheduler = LinearWarmupCosineAnnealingLR(
-        optimizer=optimizer,
-        warmup_epochs=10,
-        warmup_start_lr=float(config.learning_rate) / 100,
-        max_epochs=config.max_epochs,
-        eta_min=0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+
     early_stopper = EarlyStopping(mode='max',
                                   patience=config.patience,
                                   percentage=False)
 
     mse_loss = torch.nn.MSELoss()
     best_val_psnr = 0
+    best_val_dice = 0
     backprop_freq = config.batch_size
+    if 'n_plot_per_epoch' not in config.keys():
+        config.n_plot_per_epoch = 1
 
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
@@ -74,15 +76,15 @@ def train(config: AttributeHashmap):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
         model.train()
         optimizer.zero_grad()
+
+        plot_freq = int(len(train_set) // config.n_plot_per_epoch)
         for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
             if 'max_training_samples' in config:
                 if iter_idx > config.max_training_samples:
                     break
 
-            if 'plot_freq' not in config.keys():
-                config.plot_freq = len(train_set)
-            shall_plot = iter_idx % config.plot_freq == 0
+            shall_plot = iter_idx % plot_freq == 0
 
             # NOTE: batch size is set to 1,
             # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
@@ -149,7 +151,7 @@ def train(config: AttributeHashmap):
         train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
             [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
-        lr_scheduler.step()
+        scheduler.step()
 
         log('Train [%s/%s] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
             % (epoch_idx + 1, config.max_epochs, train_loss_recon, train_loss_pred, train_recon_psnr,
@@ -160,6 +162,7 @@ def train(config: AttributeHashmap):
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
         model.eval()
+
         with torch.no_grad():
             segmentor = torch.nn.Sequential(
                 monai.networks.nets.DynUNet(
@@ -174,7 +177,10 @@ def train(config: AttributeHashmap):
             segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
             segmentor.eval()
 
+            plot_freq = int(len(val_set) // config.n_plot_per_epoch)
             for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
+                shall_plot = iter_idx % plot_freq == 0
+
                 assert images.shape[1] == 2
                 assert timestamps.shape[1] == 2
 
@@ -206,9 +212,9 @@ def train(config: AttributeHashmap):
                 val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
                 val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
 
-                if iter_idx == 10:
-                    save_path_fig_sbs = '%s/val/figure_log_epoch_%s.png' % (
-                        config.save_folder, str(epoch_idx).zfill(5))
+                if shall_plot:
+                    save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
+                        config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
                     plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
                                       x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
@@ -226,8 +232,15 @@ def train(config: AttributeHashmap):
 
         if val_pred_psnr > best_val_psnr:
             best_val_psnr = val_pred_psnr
-            model.save_weights(config.model_save_path)
-            log('%s: Model weights successfully saved.' % config.model,
+            model.save_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'))
+            log('%s: Model weights successfully saved for best pred PSNR.' % config.model,
+                filepath=config.log_dir,
+                to_console=False)
+
+        if val_seg_dice_xT > best_val_dice:
+            best_val_dice = val_seg_dice_xT
+            model.save_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'))
+            log('%s: Model weights successfully saved for best dice xT.' % config.model,
                 filepath=config.log_dir,
                 to_console=False)
 

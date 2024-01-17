@@ -44,7 +44,7 @@ def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, Non
     transforms_train, transforms_val, transforms_test = transforms_list
     train_set = Subset(main_dataset=dataset,
                        subset_indices=train_indices,
-                       return_format=config.return_format,
+                       return_format='one_pair',
                        transforms=transforms_train,
                        pos_neg_pairs=config.pos_neg_pairs)
     val_set = Subset(main_dataset=dataset,
