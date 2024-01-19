@@ -62,27 +62,35 @@ class T_UNet(BaseNetwork):
                                non_linearity=self.non_linearity)
 
         # This is for the decoder.
+        self.t_emb_list = torch.nn.ModuleList([])
         self.up_list = torch.nn.ModuleList([])
         self.up_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
+            self.t_emb_list.append(self._construct_t_emb(n_f * 2 ** d))
             self.up_conn_list.append(torch.nn.Conv2d(n_f * 3 * 2 ** d, n_f * 2 ** d, 1, 1))
             self.up_list.append(upconv_block(n_f * 2 ** d))
+        self.t_emb_list = self.t_emb_list[::-1]
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.time_embed_dim = n_f * 2 ** self.depth
-        self.time_embed = torch.nn.Sequential(
-            torch.torch.nn.Linear(self.time_embed_dim, self.time_embed_dim),
-            torch.nn.SiLU(),
-            torch.torch.nn.Linear(self.time_embed_dim, self.time_embed_dim),
-        )
+        self.t_emb_bottleneck = self._construct_t_emb(n_f * 2 ** self.depth)
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
+
+    def _construct_t_emb(self, time_embed_dim: int):
+        '''
+        Construct a block for time embedding.
+        '''
+        return torch.nn.Sequential(
+            torch.torch.nn.Linear(time_embed_dim, time_embed_dim),
+            torch.nn.SiLU(),
+            torch.torch.nn.Linear(time_embed_dim, time_embed_dim),
+        )
 
     def time_independent_parameters(self):
         '''
-        Parameters related to ODE.
+        Parameters related to time embedding.
         '''
-        return set(self.parameters()) - set(self.time_embed.parameters())
+        return set(self.parameters()) - set(self.t_emb_list.parameters()) - set(self.t_emb_bottleneck.parameters())
 
     def freeze_time_independent(self):
         '''
@@ -101,8 +109,8 @@ class T_UNet(BaseNetwork):
         x, residual_list = self.encoder(x)
 
         # Time embedding through feature space addition.
-        assert x.shape[0] == 1 and x.shape[1] == self.time_embed_dim
-        t_emb = self.time_embed(timestep_embedding(t, dim=self.time_embed_dim))
+        assert x.shape[0] == 1
+        t_emb = self.t_emb_bottleneck(timestep_embedding(t, dim=x.shape[1]))
         t_emb = t_emb[:, :, None, None].repeat((1, 1, x.shape[2], x.shape[3]))
         x = x + t_emb
 
@@ -112,6 +120,9 @@ class T_UNet(BaseNetwork):
                                                 mode='bilinear',
                                                 align_corners=True)
             res = residual_list.pop(-1)
+            t_emb = self.t_emb_list[d](timestep_embedding(t, dim=res.shape[1]))
+            t_emb = t_emb[:, :, None, None].repeat((1, 1, res.shape[2], res.shape[3]))
+            res = res + t_emb
             x = torch.cat([x, res], dim=1)
             x = self.non_linearity(self.up_conn_list[d](x))
             x = self.up_list[d](x)
