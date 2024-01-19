@@ -99,7 +99,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs'],
                  transforms = None,
-                 min_time_diff: int = 6,
+                #  min_time_diff: int = 6,
                  pos_neg_pairs: bool = False):
         '''
         A subset of RetinaUCSFDataset.
@@ -122,7 +122,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         self.target_dim = main_dataset.target_dim
         self.return_format = return_format
         self.transforms = transforms
-        self.min_time_diff = min_time_diff
+        # self.min_time_diff = min_time_diff
 
         self.image_by_patient = [
             main_dataset.image_by_patient[i] for i in subset_indices
@@ -150,20 +150,29 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             pair_indices = list(
                 itertools.combinations(np.arange(len(image_list)), r=2))
 
-            # Find valid time pairs that are far enough from each other.
-            all_times = np.array([get_time(i) for i in image_list])
-            time_diff = np.diff(all_times)
-            if min(time_diff) >= self.min_time_diff:
-                # Select from the far-enough time pairs.
-                valid_locs = np.where(time_diff >= self.min_time_diff)[0]
-                selected_loc = np.random.choice(valid_locs)
-                time_pair_far_loc = [selected_loc, selected_loc + 1]
-            else:
-                # Select the farthest time pair.
-                time_pair_far_loc = [0, -1]
+            # # Find valid time pairs that are far enough from each other.
+            # all_times = np.array([get_time(i) for i in image_list])
+            # time_diff = np.diff(all_times)
+            # if min(time_diff) >= self.min_time_diff:
+            #     # Select from the far-enough time pairs.
+            #     valid_locs = np.where(time_diff >= self.min_time_diff)[0]
+            #     selected_loc = np.random.choice(valid_locs)
+            #     time_pair_far_loc = [selected_loc, selected_loc + 1]
+            # else:
+            #     # Select the farthest time pair.
+            #     time_pair_far_loc = [0, -1]
 
-            sampled_pair = [image_list[i] for i in time_pair_far_loc]
+            # sampled_pair = [image_list[i] for i in time_pair_far_loc]
 
+            # images = np.array([
+            #     load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
+            # ])
+            # timestamps = np.array([get_time(p) for p in sampled_pair])
+
+            sampled_pair = [
+                image_list[i]
+                for i in pair_indices[np.random.choice(len(pair_indices))]
+            ]
             images = np.array([
                 load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
             ])

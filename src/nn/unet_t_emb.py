@@ -1,10 +1,10 @@
 from .base import BaseNetwork
-from .nn_utils import ConvBlock, ResConvBlock, ODEfunc, ODEBlock
+from .nn_utils import ConvBlock, ResConvBlock, timestep_embedding
 from .common_encoder import Encoder
 import torch
 
 
-class ODEUNet(BaseNetwork):
+class T_UNet(BaseNetwork):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -15,7 +15,7 @@ class ODEUNet(BaseNetwork):
                  out_channels: int = 3,
                  non_linearity: str = 'relu'):
         '''
-        A UNet model with ODE.
+        An UNet model with time embedding.
 
         Parameters
         ----------
@@ -62,25 +62,27 @@ class ODEUNet(BaseNetwork):
                                non_linearity=self.non_linearity)
 
         # This is for the decoder.
-        self.ode_list = torch.nn.ModuleList([])
         self.up_list = torch.nn.ModuleList([])
         self.up_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
-            self.ode_list.append(ODEBlock(ODEfunc(dim=n_f * 2 ** d)))
             self.up_conn_list.append(torch.nn.Conv2d(n_f * 3 * 2 ** d, n_f * 2 ** d, 1, 1))
             self.up_list.append(upconv_block(n_f * 2 ** d))
-        self.ode_list = self.ode_list[::-1]
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.ode_bottleneck = ODEBlock(ODEfunc(dim=n_f * 2 ** self.depth))
+        self.time_embed_dim = n_f * 2 ** self.depth
+        self.time_embed = torch.nn.Sequential(
+            torch.torch.nn.Linear(self.time_embed_dim, self.time_embed_dim),
+            torch.nn.SiLU(),
+            torch.torch.nn.Linear(self.time_embed_dim, self.time_embed_dim),
+        )
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
 
     def time_independent_parameters(self):
         '''
         Parameters related to ODE.
         '''
-        return set(self.parameters()) - set(self.ode_list.parameters()) - set(self.ode_bottleneck.parameters())
+        return set(self.parameters()) - set(self.time_embed.parameters())
 
     def freeze_time_independent(self):
         '''
@@ -91,30 +93,25 @@ class ODEUNet(BaseNetwork):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         '''
-        Time embedding through ODE.
+        Time embedding through sinusoidal embedding.
         '''
 
         assert x.shape[0] == 1
 
-        # Skip ODE if no time difference.
-        use_ode = t.item() != 0
-        if use_ode:
-            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
-
         x, residual_list = self.encoder(x)
 
-        if use_ode:
-            x = self.ode_bottleneck(x, integration_time)
+        # Time embedding through feature space addition.
+        assert x.shape[0] == 1 and x.shape[1] == self.time_embed_dim
+        t_emb = self.time_embed(timestep_embedding(t, dim=self.time_embed_dim))
+        t_emb = t_emb[:, :, None, None].repeat((1, 1, x.shape[2], x.shape[3]))
+        x = x + t_emb
 
         for d in range(self.depth):
             x = torch.nn.functional.interpolate(x,
                                                 scale_factor=2,
                                                 mode='bilinear',
-                                                align_corners=False)
-            if use_ode:
-                res = self.ode_list[d](residual_list.pop(-1), integration_time)
-            else:
-                res = residual_list.pop(-1)
+                                                align_corners=True)
+            res = residual_list.pop(-1)
             x = torch.cat([x, res], dim=1)
             x = self.non_linearity(self.up_conn_list[d](x))
             x = self.up_list[d](x)
@@ -122,3 +119,5 @@ class ODEUNet(BaseNetwork):
         output = self.out_layer(x)
 
         return output
+
+

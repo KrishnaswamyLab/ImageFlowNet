@@ -15,6 +15,8 @@ from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
 from nn.unet_ode import ODEUNet
+from nn.unet_t_emb import T_UNet
+from nn.scheduler import LinearWarmupCosineAnnealingLR
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
@@ -30,7 +32,7 @@ def train(config: AttributeHashmap):
     train_transform = A.Compose(
         [
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5),
+            # A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         ],
         additional_targets={
@@ -56,7 +58,9 @@ def train(config: AttributeHashmap):
     model.init_params()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    scheduler = LinearWarmupCosineAnnealingLR(optimizer,
+                                              warmup_epochs=config.max_epochs//5,
+                                              max_epochs=config.max_epochs)
 
     early_stopper = EarlyStopping(mode='max',
                                   patience=config.patience,
@@ -71,6 +75,9 @@ def train(config: AttributeHashmap):
 
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
+
+    recon_psnr_thr = 30
+    recon_good_enough = False
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
@@ -115,25 +122,34 @@ def train(config: AttributeHashmap):
             ########################## Pred Loss to update ODE ########################
             # Freeze all modules other than ODE.
             try:
-                model.freeze_non_ode()
+                model.freeze_time_independent()
             except AttributeError:
-                print('`model.freeze_non_ode()` ignored.')
+                print('`model.freeze_time_independent()` ignored.')
 
-            assert torch.diff(t_list).item() > 0
-            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+            if recon_good_enough:
+                assert torch.diff(t_list).item() > 0
+                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-            loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
-            train_loss_pred += loss_pred.item()
+                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                train_loss_pred += loss_pred.item()
 
-            # Simulate `config.batch_size` by batched optimizer update.
-            loss_ = loss_pred / backprop_freq
-            loss_.backward()
+                # Simulate `config.batch_size` by batched optimizer update.
+                loss_ = loss_pred / backprop_freq
+                loss_.backward()
 
-            # Simulate `config.batch_size` by batched optimizer update.
-            if iter_idx % config.batch_size == config.batch_size - 1:
-                optimizer.step()
-                optimizer.zero_grad()
+                # Simulate `config.batch_size` by batched optimizer update.
+                if iter_idx % config.batch_size == config.batch_size - 1:
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            else:
+                # Don't train the ODE model until the reconstruction is good enough.
+                with torch.no_grad():
+                    x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+                    x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+                    loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                    train_loss_pred += loss_pred.item()
 
             x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
                 numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
@@ -219,6 +235,9 @@ def train(config: AttributeHashmap):
                                       x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
             del segmentor
+
+        if val_recon_psnr > recon_psnr_thr:
+            recon_good_enough = True
 
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
             [item / len(val_set.dataset) for item in (
