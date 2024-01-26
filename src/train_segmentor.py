@@ -246,12 +246,13 @@ if __name__ == '__main__':
     parser.add_argument('--config',
                         help='Path to config yaml file.',
                         required=True)
+    parser.add_argument('--run_count', default=None, type=int)
     args = vars(parser.parse_args())
 
     args = AttributeHashmap(args)
     config = AttributeHashmap(yaml.safe_load(open(args.config)))
     config.config_file_name = args.config
-    config = parse_settings(config, log_settings=args.mode == 'train')
+    config = parse_settings(config, log_settings=args.mode == 'train', run_count=args.run_count)
 
     assert args.mode in ['train', 'test']
 

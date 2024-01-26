@@ -3,6 +3,7 @@ from typing import Tuple
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
+from torch_ema import ExponentialMovingAverage
 import os
 import cv2
 import yaml
@@ -54,12 +55,15 @@ def train(config: AttributeHashmap):
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.99)
+
     model.to(device)
     model.init_params()
+    ema.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     scheduler = LinearWarmupCosineAnnealingLR(optimizer,
-                                              warmup_epochs=config.max_epochs//5,
+                                              warmup_epochs=config.max_epochs//10,
                                               max_epochs=config.max_epochs)
 
     early_stopper = EarlyStopping(mode='max',
@@ -142,6 +146,7 @@ def train(config: AttributeHashmap):
                 if iter_idx % config.batch_size == config.batch_size - 1:
                     optimizer.step()
                     optimizer.zero_grad()
+                    ema.update()
 
             else:
                 # Don't train the ODE model until the reconstruction is good enough.
@@ -177,91 +182,93 @@ def train(config: AttributeHashmap):
 
         val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
         val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
-        model.eval()
 
-        with torch.no_grad():
-            segmentor = torch.nn.Sequential(
-                monai.networks.nets.DynUNet(
-                    spatial_dims=2,
-                    in_channels=1,
-                    out_channels=1,
-                    kernel_size=[5, 5, 5, 5],
-                    filters=[16, 32, 64, 128],
-                    strides=[1, 1, 1, 1],
-                    upsample_kernel_size=[1, 1, 1, 1]),
-                torch.nn.Sigmoid()).to(device)
-            segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
-            segmentor.eval()
+        with ema.average_parameters():
+            model.eval()
 
-            plot_freq = int(len(val_set) // config.n_plot_per_epoch)
-            for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
-                shall_plot = iter_idx % plot_freq == 0
+            with torch.no_grad():
+                segmentor = torch.nn.Sequential(
+                    monai.networks.nets.DynUNet(
+                        spatial_dims=2,
+                        in_channels=1,
+                        out_channels=1,
+                        kernel_size=[5, 5, 5, 5],
+                        filters=[16, 32, 64, 128],
+                        strides=[1, 1, 1, 1],
+                        upsample_kernel_size=[1, 1, 1, 1]),
+                    torch.nn.Sigmoid()).to(device)
+                segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+                segmentor.eval()
 
-                assert images.shape[1] == 2
-                assert timestamps.shape[1] == 2
+                plot_freq = int(len(val_set) // config.n_plot_per_epoch)
+                for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
+                    shall_plot = iter_idx % plot_freq == 0
 
-                # images: [1, 2, C, H, W], containing [x_start, x_end]
-                # timestamps: [1, 2], containing [t_start, t_end]
-                x_start, x_end, t_list = convert_variables(images, timestamps, device)
+                    assert images.shape[1] == 2
+                    assert timestamps.shape[1] == 2
 
-                x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-                x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+                    # images: [1, 2, C, H, W], containing [x_start, x_end]
+                    # timestamps: [1, 2], containing [t_start, t_end]
+                    x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
-                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+                    x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
+                    x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
-                x_start_seg = segmentor(x_start) > 0.5
-                x_end_seg = segmentor(x_end) > 0.5
-                x_start_pred_seg = segmentor(x_start_pred) > 0.5
-                x_end_pred_seg = segmentor(x_end_pred) > 0.5
+                    x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+                    x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-                x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
-                    numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                                    x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
+                    x_start_seg = segmentor(x_start) > 0.5
+                    x_end_seg = segmentor(x_end) > 0.5
+                    x_start_pred_seg = segmentor(x_start_pred) > 0.5
+                    x_end_pred_seg = segmentor(x_end_pred) > 0.5
 
-                val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
-                val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-                val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-                val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+                    x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
+                        numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
+                                        x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
 
-                val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
-                val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
-                val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
+                    val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+                    val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+                    val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+                    val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
 
-                if shall_plot:
-                    save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
-                        config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
-                    plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
-                                      x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
+                    val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
+                    val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
+                    val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
 
-            del segmentor
+                    if shall_plot:
+                        save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
+                            config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+                        plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
+                                        x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
-        if val_recon_psnr > recon_psnr_thr:
-            recon_good_enough = True
+                del segmentor
 
-        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
-            [item / len(val_set.dataset) for item in (
-                val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
+            if val_recon_psnr > recon_psnr_thr:
+                recon_good_enough = True
 
-        log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
-            % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-               val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
-            filepath=config.log_dir,
-            to_console=False)
+            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
+                [item / len(val_set.dataset) for item in (
+                    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
 
-        if val_pred_psnr > best_val_psnr:
-            best_val_psnr = val_pred_psnr
-            model.save_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'))
-            log('%s: Model weights successfully saved for best pred PSNR.' % config.model,
+            log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
+                % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
+                val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
                 filepath=config.log_dir,
                 to_console=False)
 
-        if val_seg_dice_xT > best_val_dice:
-            best_val_dice = val_seg_dice_xT
-            model.save_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'))
-            log('%s: Model weights successfully saved for best dice xT.' % config.model,
-                filepath=config.log_dir,
-                to_console=False)
+            if val_pred_psnr > best_val_psnr:
+                best_val_psnr = val_pred_psnr
+                model.save_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'))
+                log('%s: Model weights successfully saved for best pred PSNR.' % config.model,
+                    filepath=config.log_dir,
+                    to_console=False)
+
+            if val_seg_dice_xT > best_val_dice:
+                best_val_dice = val_seg_dice_xT
+                model.save_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'))
+                log('%s: Model weights successfully saved for best dice xT.' % config.model,
+                    filepath=config.log_dir,
+                    to_console=False)
 
         if early_stopper.step(val_pred_psnr):
             log('Early stopping criterion met. Ending training.',
@@ -288,11 +295,24 @@ def test(config: AttributeHashmap):
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)
-    model.load_weights(config.model_save_path, device=device)
+    model.load_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'), device=device)
     log('%s: Model weights successfully loaded.' % config.model,
         to_console=True)
 
-    save_path_fig_summary = '%s/results/summary.png' % config.output_save_path
+    segmentor = torch.nn.Sequential(
+        monai.networks.nets.DynUNet(
+            spatial_dims=2,
+            in_channels=1,
+            out_channels=1,
+            kernel_size=[5, 5, 5, 5],
+            filters=[16, 32, 64, 128],
+            strides=[1, 1, 1, 1],
+            upsample_kernel_size=[1, 1, 1, 1]),
+        torch.nn.Sigmoid()).to(device)
+    segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+    segmentor.eval()
+
+    save_path_fig_summary = '%s/results/summary.png' % config.save_folder
     os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
 
     mse_loss = torch.nn.MSELoss()
@@ -321,8 +341,14 @@ def test(config: AttributeHashmap):
         loss = loss_recon + loss_pred
         test_loss += loss.item()
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+        x_start_seg = segmentor(x_start) > 0.5
+        x_end_seg = segmentor(x_end) > 0.5
+        x_start_pred_seg = segmentor(x_start_pred) > 0.5
+        x_end_pred_seg = segmentor(x_end_pred) > 0.5
+
+        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
+            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
+                            x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
 
         test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
             xT_true, xT_recon) / 2
@@ -368,7 +394,8 @@ def test(config: AttributeHashmap):
         if iter_idx < 20:
             save_path_fig_sbs = '%s/figure_%s.png' % (
                 os.path.dirname(save_path_fig_summary), str(iter_idx).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
+                              x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
     test_loss = test_loss / len(test_set.dataset)
     test_recon_psnr = test_recon_psnr / len(test_set.dataset)
@@ -514,6 +541,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Entry point.')
     parser.add_argument('--mode', help='`train` or `test`?', default='train')
     parser.add_argument('--gpu-id', help='Index of GPU device', default=0)
+    parser.add_argument('--run_count', default=None, type=int)
     parser.add_argument('--config',
                         help='Path to config yaml file.',
                         required=True)
@@ -523,7 +551,7 @@ if __name__ == '__main__':
     config = AttributeHashmap(yaml.safe_load(open(args.config)))
     config.config_file_name = args.config
     config.gpu_id = args.gpu_id
-    config = parse_settings(config, log_settings=args.mode == 'train')
+    config = parse_settings(config, log_settings=args.mode == 'train', run_count=args.run_count)
 
     assert args.mode in ['train', 'test']
 

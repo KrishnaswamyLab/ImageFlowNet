@@ -34,6 +34,7 @@ python -m pip install opencv-python
 python -m pip install git+https://github.com/facebookresearch/segment-anything.git
 python -m pip install monai
 python -m pip install torchdiffeq
+python -m pip install torch-ema
 <!-- conda install -c conda-forge gcc=12.1.0  # If you see version `GLIBCXX_3.4.30' not found. -->
 ```
 

@@ -6,7 +6,7 @@ from utils.attribute_hashmap import AttributeHashmap
 from utils.log_util import log
 
 
-def parse_settings(config: AttributeHashmap, log_settings: bool = True):
+def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_count: int = None):
     # fix typing issues
     for key in ['learning_rate', 'ode_tol']:
         if key in config.keys():
@@ -23,12 +23,13 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True):
             config[key] = config[key].replace('$ROOT', ROOT)
 
     # Initialize save folder.
-    existing_runs = glob(config.output_save_path + '/run_*/')
-    if len(existing_runs) > 0:
-        run_counts = [int(item.split('/')[-2].split('run_')[1]) for item in existing_runs]
-        run_count = max(run_counts) + 1
-    else:
-        run_count = 1
+    if run_count is None:
+        existing_runs = glob(config.output_save_path + '/run_*/')
+        if len(existing_runs) > 0:
+            run_counts = [int(item.split('/')[-2].split('run_')[1]) for item in existing_runs]
+            run_count = max(run_counts) + 1
+        else:
+            run_count = 1
 
     config.save_folder = '%s/run_%d/' % (config.output_save_path, run_count)
 
