@@ -73,8 +73,7 @@ def train(config: AttributeHashmap):
                                   percentage=False)
 
     mse_loss = torch.nn.MSELoss()
-    best_val_psnr = 0
-    best_val_dice = 0
+    best_val_psnr, best_val_dice = 0, 0
     backprop_freq = config.batch_size
     if 'n_plot_per_epoch' not in config.keys():
         config.n_plot_per_epoch = 1
@@ -86,10 +85,10 @@ def train(config: AttributeHashmap):
     recon_good_enough = False
 
     for epoch_idx in tqdm(range(config.max_epochs)):
-        model, ema, optimizer, scheduler, recon_good_enough = \
-            train_epoch(config=config, device=device, train_set=train_set, model=model,
-                        epoch_idx=epoch_idx, ema=ema, optimizer=optimizer, scheduler=scheduler,
-                        mse_loss=mse_loss, backprop_freq=backprop_freq, recon_good_enough=recon_good_enough)
+        model, ema, optimizer, scheduler = \
+            train_epoch_main(config=config, device=device, train_set=train_set, model=model,
+                             epoch_idx=epoch_idx, ema=ema, optimizer=optimizer, scheduler=scheduler,
+                             mse_loss=mse_loss, backprop_freq=backprop_freq, train_time_dependent=recon_good_enough)
 
         with ema.average_parameters():
             model.eval()
@@ -121,17 +120,17 @@ def train(config: AttributeHashmap):
     return
 
 
-def train_epoch(config: AttributeHashmap,
-                device: torch.device,
-                train_set: Dataset,
-                model: torch.nn.Module,
-                epoch_idx: int,
-                ema: ExponentialMovingAverage,
-                optimizer: torch.optim.Optimizer,
-                scheduler: torch.optim.lr_scheduler._LRScheduler,
-                mse_loss: torch.nn.Module,
-                backprop_freq: int,
-                recon_good_enough: bool):
+def train_epoch_main(config: AttributeHashmap,
+                     device: torch.device,
+                     train_set: Dataset,
+                     model: torch.nn.Module,
+                     epoch_idx: int,
+                     ema: ExponentialMovingAverage,
+                     optimizer: torch.optim.Optimizer,
+                     scheduler: torch.optim.lr_scheduler._LRScheduler,
+                     mse_loss: torch.nn.Module,
+                     backprop_freq: int,
+                     train_time_dependent: bool):
 
     train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
     model.train()
@@ -158,7 +157,7 @@ def train_epoch(config: AttributeHashmap,
 
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
-        ##################### Recon Loss to update Encoder/Decoder ################
+        ################### Recon Loss to update Encoder/Decoder ##################
         # Unfreeze the model.
         model.unfreeze()
 
@@ -169,17 +168,17 @@ def train_epoch(config: AttributeHashmap,
         train_loss_recon += loss_recon.item()
 
         # Simulate `config.batch_size` by batched optimizer update.
-        loss_ = loss_recon / backprop_freq
-        loss_.backward()
+        loss_recon = loss_recon / backprop_freq
+        loss_recon.backward()
 
-        ########################## Pred Loss to update ODE ########################
-        # Freeze all modules other than ODE.
+        ################## Pred Loss to update time-dependent modules #############
+        # Freeze all time-independent modules.
         try:
             model.freeze_time_independent()
         except AttributeError:
             print('`model.freeze_time_independent()` ignored.')
 
-        if recon_good_enough:
+        if train_time_dependent:
             assert torch.diff(t_list).item() > 0
             x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
             x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
@@ -188,22 +187,22 @@ def train_epoch(config: AttributeHashmap,
             train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
-            loss_ = loss_pred / backprop_freq
-            loss_.backward()
-
-            # Simulate `config.batch_size` by batched optimizer update.
-            if iter_idx % config.batch_size == config.batch_size - 1:
-                optimizer.step()
-                optimizer.zero_grad()
-                ema.update()
+            loss_pred = loss_pred / backprop_freq
+            loss_pred.backward()
 
         else:
-            # Don't train the ODE model until the reconstruction is good enough.
+            # Don't train the time-dependent part of the model until the reconstruction is good enough.
             with torch.no_grad():
                 x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
                 x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
                 loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
                 train_loss_pred += loss_pred.item()
+
+        # Simulate `config.batch_size` by batched optimizer update.
+        if iter_idx % config.batch_size == config.batch_size - 1:
+            optimizer.step()
+            optimizer.zero_grad()
+            ema.update()
 
         x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
             numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
@@ -229,7 +228,7 @@ def train_epoch(config: AttributeHashmap,
         filepath=config.log_dir,
         to_console=False)
 
-    return model, ema, optimizer, scheduler, recon_good_enough
+    return model, ema, optimizer, scheduler
 
 
 @torch.no_grad()
