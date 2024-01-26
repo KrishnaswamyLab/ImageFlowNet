@@ -1,17 +1,19 @@
 import argparse
+import os
+import cv2
+import yaml
 from typing import Tuple
+
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
 from torch_ema import ExponentialMovingAverage
-import os
-import cv2
-import yaml
-from data_utils.prepare_dataset import prepare_dataset
+from torch.utils.data import Dataset
 from tqdm import tqdm
 import monai
 import albumentations as A
 
+from data_utils.prepare_dataset import prepare_dataset
 from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
@@ -33,7 +35,7 @@ def train(config: AttributeHashmap):
     train_transform = A.Compose(
         [
             A.HorizontalFlip(p=0.5),
-            # A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=45, border_mode=0, value=-1, p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         ],
         additional_targets={
@@ -84,177 +86,18 @@ def train(config: AttributeHashmap):
     recon_good_enough = False
 
     for epoch_idx in tqdm(range(config.max_epochs)):
-        train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
-        model.train()
-        optimizer.zero_grad()
-
-        plot_freq = int(len(train_set) // config.n_plot_per_epoch)
-        for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
-
-            if 'max_training_samples' in config:
-                if iter_idx > config.max_training_samples:
-                    break
-
-            shall_plot = iter_idx % plot_freq == 0
-
-            # NOTE: batch size is set to 1,
-            # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
-            # while different patients have different [t_start, t_end] in our dataset.
-            # We will simulate a bigger batch size when we handle optimizer update.
-
-            # images: [1, 2, C, H, W], containing [x_start, x_end]
-            # timestamps: [1, 2], containing [t_start, t_end]
-            assert images.shape[1] == 2
-            assert timestamps.shape[1] == 2
-
-            x_start, x_end, t_list = convert_variables(images, timestamps, device)
-
-            ##################### Recon Loss to update Encoder/Decoder ################
-            # Unfreeze the model.
-            model.unfreeze()
-
-            x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-            x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-
-            loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
-            train_loss_recon += loss_recon.item()
-
-            # Simulate `config.batch_size` by batched optimizer update.
-            loss_ = loss_recon / backprop_freq
-            loss_.backward()
-
-            ########################## Pred Loss to update ODE ########################
-            # Freeze all modules other than ODE.
-            try:
-                model.freeze_time_independent()
-            except AttributeError:
-                print('`model.freeze_time_independent()` ignored.')
-
-            if recon_good_enough:
-                assert torch.diff(t_list).item() > 0
-                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-
-                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
-                train_loss_pred += loss_pred.item()
-
-                # Simulate `config.batch_size` by batched optimizer update.
-                loss_ = loss_pred / backprop_freq
-                loss_.backward()
-
-                # Simulate `config.batch_size` by batched optimizer update.
-                if iter_idx % config.batch_size == config.batch_size - 1:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    ema.update()
-
-            else:
-                # Don't train the ODE model until the reconstruction is good enough.
-                with torch.no_grad():
-                    x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-                    x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-                    loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
-                    train_loss_pred += loss_pred.item()
-
-            x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-                numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
-
-            train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
-            train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-            train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-            train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
-
-            if shall_plot:
-                save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
-                    config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
-                plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
-
-        train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
-            [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
-
-        scheduler.step()
-
-        log('Train [%s/%s] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (epoch_idx + 1, config.max_epochs, train_loss_recon, train_loss_pred, train_recon_psnr,
-               train_recon_ssim, train_pred_psnr, train_pred_ssim),
-            filepath=config.log_dir,
-            to_console=False)
-
-        val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
-        val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
+        model, ema, optimizer, scheduler, recon_good_enough = \
+            train_epoch(config=config, device=device, train_set=train_set, model=model,
+                        epoch_idx=epoch_idx, ema=ema, optimizer=optimizer, scheduler=scheduler,
+                        mse_loss=mse_loss, backprop_freq=backprop_freq, recon_good_enough=recon_good_enough)
 
         with ema.average_parameters():
             model.eval()
-
-            with torch.no_grad():
-                segmentor = torch.nn.Sequential(
-                    monai.networks.nets.DynUNet(
-                        spatial_dims=2,
-                        in_channels=1,
-                        out_channels=1,
-                        kernel_size=[5, 5, 5, 5],
-                        filters=[16, 32, 64, 128],
-                        strides=[1, 1, 1, 1],
-                        upsample_kernel_size=[1, 1, 1, 1]),
-                    torch.nn.Sigmoid()).to(device)
-                segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
-                segmentor.eval()
-
-                plot_freq = int(len(val_set) // config.n_plot_per_epoch)
-                for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
-                    shall_plot = iter_idx % plot_freq == 0
-
-                    assert images.shape[1] == 2
-                    assert timestamps.shape[1] == 2
-
-                    # images: [1, 2, C, H, W], containing [x_start, x_end]
-                    # timestamps: [1, 2], containing [t_start, t_end]
-                    x_start, x_end, t_list = convert_variables(images, timestamps, device)
-
-                    x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-                    x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-
-                    x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
-                    x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-
-                    x_start_seg = segmentor(x_start) > 0.5
-                    x_end_seg = segmentor(x_end) > 0.5
-                    x_start_pred_seg = segmentor(x_start_pred) > 0.5
-                    x_end_pred_seg = segmentor(x_end_pred) > 0.5
-
-                    x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
-                        numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                                        x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
-
-                    val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
-                    val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-                    val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-                    val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
-
-                    val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
-                    val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
-                    val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
-
-                    if shall_plot:
-                        save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
-                            config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
-                        plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
-                                        x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
-
-                del segmentor
+            val_recon_psnr, val_pred_psnr, val_seg_dice_xT = \
+                val_epoch(config=config, device=device, val_set=val_set, model=model, epoch_idx=epoch_idx)
 
             if val_recon_psnr > recon_psnr_thr:
                 recon_good_enough = True
-
-            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
-                [item / len(val_set.dataset) for item in (
-                    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
-
-            log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
-                % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-                val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
-                filepath=config.log_dir,
-                to_console=False)
 
             if val_pred_psnr > best_val_psnr:
                 best_val_psnr = val_pred_psnr
@@ -276,6 +119,195 @@ def train(config: AttributeHashmap):
                 to_console=True)
             break
     return
+
+
+def train_epoch(config: AttributeHashmap,
+                device: torch.device,
+                train_set: Dataset,
+                model: torch.nn.Module,
+                epoch_idx: int,
+                ema: ExponentialMovingAverage,
+                optimizer: torch.optim.Optimizer,
+                scheduler: torch.optim.lr_scheduler._LRScheduler,
+                mse_loss: torch.nn.Module,
+                backprop_freq: int,
+                recon_good_enough: bool):
+
+    train_loss_recon, train_loss_pred, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = 0, 0, 0, 0, 0, 0
+    model.train()
+    optimizer.zero_grad()
+
+    plot_freq = int(len(train_set) // config.n_plot_per_epoch)
+    for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
+
+        if 'max_training_samples' in config:
+            if iter_idx > config.max_training_samples:
+                break
+
+        shall_plot = iter_idx % plot_freq == 0
+
+        # NOTE: batch size is set to 1,
+        # because in Neural ODE, `eval_times` has to be a 1-D Tensor,
+        # while different patients have different [t_start, t_end] in our dataset.
+        # We will simulate a bigger batch size when we handle optimizer update.
+
+        # images: [1, 2, C, H, W], containing [x_start, x_end]
+        # timestamps: [1, 2], containing [t_start, t_end]
+        assert images.shape[1] == 2
+        assert timestamps.shape[1] == 2
+
+        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+
+        ##################### Recon Loss to update Encoder/Decoder ################
+        # Unfreeze the model.
+        model.unfreeze()
+
+        x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
+        x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+
+        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+        train_loss_recon += loss_recon.item()
+
+        # Simulate `config.batch_size` by batched optimizer update.
+        loss_ = loss_recon / backprop_freq
+        loss_.backward()
+
+        ########################## Pred Loss to update ODE ########################
+        # Freeze all modules other than ODE.
+        try:
+            model.freeze_time_independent()
+        except AttributeError:
+            print('`model.freeze_time_independent()` ignored.')
+
+        if recon_good_enough:
+            assert torch.diff(t_list).item() > 0
+            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+
+            loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+            train_loss_pred += loss_pred.item()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            loss_ = loss_pred / backprop_freq
+            loss_.backward()
+
+            # Simulate `config.batch_size` by batched optimizer update.
+            if iter_idx % config.batch_size == config.batch_size - 1:
+                optimizer.step()
+                optimizer.zero_grad()
+                ema.update()
+
+        else:
+            # Don't train the ODE model until the reconstruction is good enough.
+            with torch.no_grad():
+                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                train_loss_pred += loss_pred.item()
+
+        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
+            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+
+        train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+        train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+        train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+        train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+
+        if shall_plot:
+            save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
+                config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+
+    train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
+        [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+
+    scheduler.step()
+
+    log('Train [%s/%s] loss [recon: %.3f, pred: %.3f], PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+        % (epoch_idx + 1, config.max_epochs, train_loss_recon, train_loss_pred, train_recon_psnr,
+            train_recon_ssim, train_pred_psnr, train_pred_ssim),
+        filepath=config.log_dir,
+        to_console=False)
+
+    return model, ema, optimizer, scheduler, recon_good_enough
+
+
+@torch.no_grad()
+def val_epoch(config: AttributeHashmap,
+              device: torch.device,
+              val_set: Dataset,
+              model: torch.nn.Module,
+              epoch_idx: int):
+    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
+    val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
+
+    segmentor = torch.nn.Sequential(
+        monai.networks.nets.DynUNet(
+            spatial_dims=2,
+            in_channels=1,
+            out_channels=1,
+            kernel_size=[5, 5, 5, 5],
+            filters=[16, 32, 64, 128],
+            strides=[1, 1, 1, 1],
+            upsample_kernel_size=[1, 1, 1, 1]),
+        torch.nn.Sigmoid()).to(device)
+    segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+    segmentor.eval()
+
+    plot_freq = int(len(val_set) // config.n_plot_per_epoch)
+    for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
+        shall_plot = iter_idx % plot_freq == 0
+
+        assert images.shape[1] == 2
+        assert timestamps.shape[1] == 2
+
+        # images: [1, 2, C, H, W], containing [x_start, x_end]
+        # timestamps: [1, 2], containing [t_start, t_end]
+        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+
+        x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
+        x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+
+        x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
+        x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+
+        x_start_seg = segmentor(x_start) > 0.5
+        x_end_seg = segmentor(x_end) > 0.5
+        x_start_pred_seg = segmentor(x_start_pred) > 0.5
+        x_end_pred_seg = segmentor(x_end_pred) > 0.5
+
+        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
+            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
+                            x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
+
+        val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+        val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+        val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
+        val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+
+        val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
+        val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
+        val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
+
+        if shall_plot:
+            save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
+                config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
+                            x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
+
+    del segmentor
+
+    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
+        [item / len(val_set.dataset) for item in (
+            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
+
+    log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
+        % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
+        val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
+        filepath=config.log_dir,
+        to_console=False)
+
+    return val_recon_psnr, val_pred_psnr, val_seg_dice_xT
 
 
 @torch.no_grad()
