@@ -35,7 +35,7 @@ def train(config: AttributeHashmap):
     train_transform = A.Compose(
         [
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=45, border_mode=0, value=-1, p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, border_mode=cv2.BORDER_REPLICATE, p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         ],
         additional_targets={
@@ -136,6 +136,11 @@ def train_epoch_main(config: AttributeHashmap,
     model.train()
     optimizer.zero_grad()
 
+    if not train_time_dependent:
+        log('[Epoch %d] Will not train the time-dependent modules until the reconstruction is good enough.' % (epoch_idx + 1),
+            filepath=config.log_dir,
+            to_console=False)
+
     plot_freq = int(len(train_set) // config.n_plot_per_epoch)
     for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
@@ -191,7 +196,7 @@ def train_epoch_main(config: AttributeHashmap,
             loss_pred.backward()
 
         else:
-            # Don't train the time-dependent part of the model until the reconstruction is good enough.
+            # Will not train the time-dependent modules until the reconstruction is good enough.
             with torch.no_grad():
                 x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
                 x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
@@ -214,7 +219,7 @@ def train_epoch_main(config: AttributeHashmap,
 
         if shall_plot:
             save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
-                config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+                config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
 
     train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
@@ -290,7 +295,7 @@ def val_epoch(config: AttributeHashmap,
 
         if shall_plot:
             save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
-                config.save_folder, str(epoch_idx).zfill(5), str(iter_idx).zfill(5))
+                config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
                             x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
@@ -424,7 +429,7 @@ def test(config: AttributeHashmap):
         # Plot the side-by-side figures.
         if iter_idx < 20:
             save_path_fig_sbs = '%s/figure_%s.png' % (
-                os.path.dirname(save_path_fig_summary), str(iter_idx).zfill(5))
+                os.path.dirname(save_path_fig_summary), str(iter_idx + 1).zfill(5))
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
                               x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
