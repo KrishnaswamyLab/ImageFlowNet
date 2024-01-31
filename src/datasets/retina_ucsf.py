@@ -128,6 +128,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             main_dataset.image_by_patient[i] for i in subset_indices
         ]
 
+        self.max_t = 0
         self.all_image_pairs = []
         for image_list in self.image_by_patient:
             pair_indices = list(
@@ -135,6 +136,8 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             for (idx1, idx2) in pair_indices:
                 self.all_image_pairs.append(
                     [image_list[idx1], image_list[idx2]])
+            for p in image_list:
+                self.max_t = max(self.max_t, get_time(p))
 
     def __len__(self) -> int:
         if self.return_format == 'one_pair':

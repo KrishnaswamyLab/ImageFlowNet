@@ -52,6 +52,12 @@ To verify this, we train ODE-AE on 3 synthetic datasets.
 3. `./data/synthesized/mixing/`: non-disease regions are transformed, and the transformation is chaotic.
 ```
 
+<!-- I2SB pre-trained network
+```
+cd external_src/I2SB/
+mkdir pretrained_weights && cd pretrained_weights
+wget https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt
+``` -->
 
 <!-- ```
 conda create --name mip python==3.8
