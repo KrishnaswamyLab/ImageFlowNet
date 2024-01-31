@@ -217,10 +217,9 @@ def train_epoch(config: AttributeHashmap,
 
         if train_time_dependent:
             assert torch.diff(t_list).item() > 0
-            x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
             x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-            loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+            loss_pred = mse_loss(x_end, x_end_pred)
             train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
@@ -230,9 +229,8 @@ def train_epoch(config: AttributeHashmap,
         else:
             # Will not train the time-dependent modules until the reconstruction is good enough.
             with torch.no_grad():
-                x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
                 x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-                loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+                loss_pred = mse_loss(x_end, x_end_pred)
                 train_loss_pred += loss_pred.item()
 
         # Simulate `config.batch_size` by batched optimizer update.
@@ -241,18 +239,18 @@ def train_epoch(config: AttributeHashmap,
             optimizer.zero_grad()
             ema.update()
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred)
 
         train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-        train_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-        train_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+        train_pred_psnr += psnr(xT_true, xT_pred)
+        train_pred_ssim += ssim(xT_true, xT_pred)
 
         if shall_plot:
             save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
                 config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs)
 
     train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
         [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
@@ -308,7 +306,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
         delta_t_normalized = torch.diff(t_list) / train_set.dataset.dataset.max_t
-        step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized), (x_end.shape[0],))
+        step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized) + 1, (x_end.shape[0],))
         x_interp = model.diffusion.q_sample(step, x_end, x_start)
         x_interp_pseudo_gt = _compute_label(model.diffusion, step, x_end, x_interp)
         diffusion_time = model.step_to_t[step]
@@ -346,32 +344,34 @@ def train_epoch_I2SB(config: AttributeHashmap,
         # pdb.set_trace()
 
         # There are only for plotting purposes.
-        with ema.average_parameters():
-            model.eval()
-            # Almost reconstruction (step = [0, 1]).
-            x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
-            x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        model.eval()
+        # Almost reconstruction (step = [0, 1]).
+        _, x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        _, x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
 
-            assert torch.diff(t_list).item() > 0
-            x_start_pred = torch.zeros_like(x_start)
-            step_max = int(config.diffusion_interval * delta_t_normalized)
-            x_end_pred = model.ddpm_sampling(x_start=x_end,
-                                             steps=np.int16(np.linspace(0, step_max, step_max + 1)).tolist())
+        assert torch.diff(t_list).item() > 0
+        step_max = int(config.diffusion_interval * delta_t_normalized)
+        _, x_end_pred = model.ddpm_sampling(x_start=x_start,
+                                            steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
+
+        x_start_recon = x_start_recon[:, -1, ...]
+        x_end_recon = x_end_recon[:, -1, ...]
+        x_end_pred = x_end_pred[:, -1, ...]
 
         model.train()
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred)
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred)
 
         train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-        train_pred_psnr += psnr(xT_true, xT_pred) / 2
-        train_pred_ssim += ssim(xT_true, xT_pred) / 2
+        train_pred_psnr += psnr(xT_true, xT_pred)
+        train_pred_ssim += ssim(xT_true, xT_pred)
 
         if shall_plot:
             save_path_fig_sbs = '%s/train/figure_log_epoch%s_sample%s.png' % (
                 config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs)
 
     train_loss_diffusion, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
         [item / len(train_set.dataset) for item in (train_loss_diffusion, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
@@ -399,7 +399,7 @@ def val_epoch(config: AttributeHashmap,
               model: torch.nn.Module,
               epoch_idx: int):
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
-    val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
+    val_seg_dice_xT, val_seg_dice_gt = 0, 0
 
     segmentor = torch.nn.Sequential(
         monai.networks.nets.DynUNet(
@@ -428,42 +428,39 @@ def val_epoch(config: AttributeHashmap,
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
 
-        x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
         x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
         x_start_seg = segmentor(x_start) > 0.5
         x_end_seg = segmentor(x_end) > 0.5
-        x_start_pred_seg = segmentor(x_start_pred) > 0.5
         x_end_pred_seg = segmentor(x_end_pred) > 0.5
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                            x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
+            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
+                            x_start_seg, x_end_seg, x_end_pred_seg)
 
         val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-        val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-        val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+        val_pred_psnr += psnr(xT_true, xT_pred)
+        val_pred_ssim += ssim(xT_true, xT_pred)
 
-        val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
         val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
         val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
 
         if shall_plot:
             save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
                 config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
-                            x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs,
+                              x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
     del segmentor
 
-    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
+    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt = \
         [item / len(val_set.dataset) for item in (
-            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
+            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt)]
 
-    log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
+    log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
         % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-        val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
+        val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt),
         filepath=config.log_dir,
         to_console=False)
 
@@ -478,7 +475,7 @@ def val_epoch_I2SB(config: AttributeHashmap,
                    epoch_idx: int,
                    max_t: int):
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
-    val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = 0, 0, 0
+    val_seg_dice_xT, val_seg_dice_gt = 0, 0
 
     segmentor = torch.nn.Sequential(
         monai.networks.nets.DynUNet(
@@ -505,50 +502,50 @@ def val_epoch_I2SB(config: AttributeHashmap,
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
         # Almost reconstruction (step = [0, 1]).
-        x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
-        x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        _, x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        _, x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
 
         assert torch.diff(t_list).item() > 0
         delta_t_normalized = torch.diff(t_list) / max_t
-        x_start_pred = torch.zeros_like(x_start)
         step_max = int(config.diffusion_interval * delta_t_normalized)
-        x_end_pred = model.ddpm_sampling(x_start=x_end,
-                                         steps=np.int16(np.linspace(0, step_max, step_max + 1)).tolist())
+        _, x_end_pred = model.ddpm_sampling(x_start=x_start,
+                                            steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
+        x_start_recon = x_start_recon[:, -1, ...]
+        x_end_recon = x_end_recon[:, -1, ...]
+        x_end_pred = x_end_pred[:, -1, ...]
 
         x_start_seg = segmentor(x_start) > 0.5
         x_end_seg = segmentor(x_end) > 0.5
-        x_start_pred_seg = segmentor(x_start_pred) > 0.5
         x_end_pred_seg = segmentor(x_end_pred) > 0.5
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                            x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
+            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
+                            x_start_seg, x_end_seg, x_end_pred_seg)
 
         val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-        val_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true, xT_pred) / 2
-        val_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true, xT_pred) / 2
+        val_pred_psnr += psnr(xT_true, xT_pred)
+        val_pred_ssim += ssim(xT_true, xT_pred)
 
-        val_seg_dice_x0 += dice_coeff(x0_seg, x0_pred_seg)
         val_seg_dice_xT += dice_coeff(xT_seg, xT_pred_seg)
         val_seg_dice_gt += dice_coeff(x0_seg, xT_seg)
 
         if shall_plot:
             save_path_fig_sbs = '%s/val/figure_log_epoch%s_sample%s.png' % (
                 config.save_folder, str(epoch_idx + 1).zfill(5), str(iter_idx + 1).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
-                              x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs,
+                              x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
     del segmentor
 
-    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt = \
+    val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt = \
         [item / len(val_set.dataset) for item in (
-            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt)]
+            val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt)]
 
-    log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(x0_true, x0_pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
+    log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
         % (epoch_idx + 1, config.max_epochs, val_recon_psnr,
-        val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_x0, val_seg_dice_xT, val_seg_dice_gt),
+        val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt),
         filepath=config.log_dir,
         to_console=False)
 
@@ -606,34 +603,26 @@ def test(config: AttributeHashmap):
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-
-        x_start_pred = model(x=x_end, t=-torch.diff(t_list) * config.t_multiplier)
         x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(
-            x_end, x_end_recon)
-        loss_pred = mse_loss(x_start, x_start_pred) + mse_loss(x_end, x_end_pred)
+        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+        loss_pred = mse_loss(x_end, x_end_pred)
 
         loss = loss_recon + loss_pred
         test_loss += loss.item()
 
         x_start_seg = segmentor(x_start) > 0.5
         x_end_seg = segmentor(x_end) > 0.5
-        x_start_pred_seg = segmentor(x_start_pred) > 0.5
         x_end_pred_seg = segmentor(x_end_pred) > 0.5
 
-        x0_true, x0_recon, x0_pred, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, x0_pred_seg, xT_pred_seg = \
-            numpy_variables(x_start, x_start_recon, x_start_pred, x_end, x_end_recon, x_end_pred,
-                            x_start_seg, x_end_seg, x_start_pred_seg, x_end_pred_seg)
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
+            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
+                            x_start_seg, x_end_seg, x_end_pred_seg)
 
-        test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(
-            xT_true, xT_recon) / 2
-        test_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(
-            xT_true, xT_recon) / 2
-        test_pred_psnr += psnr(x0_true, x0_pred) / 2 + psnr(xT_true,
-                                                            xT_pred) / 2
-        test_pred_ssim += ssim(x0_true, x0_pred) / 2 + ssim(xT_true,
-                                                            xT_pred) / 2
+        test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+        test_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+        test_pred_psnr += psnr(xT_true, xT_pred)
+        test_pred_ssim += ssim(xT_true, xT_pred)
 
         # Plot an overall scattering plot.
         deltaT_list.append(0)
@@ -643,8 +632,6 @@ def test(config: AttributeHashmap):
         psnr_list.append(psnr(xT_true, xT_recon))
         ssim_list.append(ssim(xT_true, xT_recon))
         deltaT_list.append((t_list[0] - t_list[1]).item())
-        psnr_list.append(psnr(x0_true, x0_pred))
-        ssim_list.append(ssim(x0_true, x0_pred))
         deltaT_list.append((t_list[1] - t_list[0]).item())
         psnr_list.append(psnr(xT_true, xT_pred))
         ssim_list.append(ssim(xT_true, xT_pred))
@@ -670,8 +657,8 @@ def test(config: AttributeHashmap):
         if iter_idx < 20:
             save_path_fig_sbs = '%s/figure_%s.png' % (
                 os.path.dirname(save_path_fig_summary), str(iter_idx + 1).zfill(5))
-            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path_fig_sbs,
-                              x0_pred_seg=x0_pred_seg, x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
+            plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs,
+                              x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
     test_loss = test_loss / len(test_set.dataset)
     test_recon_psnr = test_recon_psnr / len(test_set.dataset)
@@ -724,16 +711,16 @@ def plot_contour(image, label):
     for contour in true_contours:
         cv2.drawContours(image, contour, -1, (0.0, 1.0, 0.0), 2)
 
-def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred, save_path: str,
-                      x0_pred_seg=None, x0_true_seg=None, xT_pred_seg=None, xT_true_seg=None) -> None:
+def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path: str,
+                      x0_true_seg=None, xT_pred_seg=None, xT_true_seg=None) -> None:
     fig_sbs = plt.figure(figsize=(24, 10))
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
     assert len(x0_true.shape) in [2, 3]
     if len(x0_true.shape) == 2 or x0_true.shape[-1] == 1:
-        x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred = \
-            gray_to_rgb(x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_pred)
+        x0_true, xT_true, x0_recon, xT_recon, xT_pred = \
+            gray_to_rgb(x0_true, xT_true, x0_recon, xT_recon, xT_pred)
 
     # First column: Ground Truth.
     ax = fig_sbs.add_subplot(2, 6, 1)
@@ -761,8 +748,6 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
 
     # Third column: Prediction.
     ax = fig_sbs.add_subplot(2, 6, 3)
-    ax.imshow(np.clip((x0_pred + 1) / 2, 0, 1))
-    ax.set_title('Pred, time: %s -> time: %s' % (t_list[1].item(), t_list[0].item()))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 9)
@@ -773,8 +758,6 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
 
     # Fourth column: |Ground Truth - Prediction|.
     ax = fig_sbs.add_subplot(2, 6, 4)
-    ax.imshow(np.clip(np.abs((x0_true + 1) / 2 - (x0_pred + 1) / 2), 0, 1))
-    ax.set_title('|GT - Pred|, time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 10)
@@ -803,11 +786,6 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, x0_pred, xT_
 
     # Sixth column: Prediction with segmentation.
     ax = fig_sbs.add_subplot(2, 6, 6)
-    image = np.clip((x0_pred + 1) / 2, 0, 1)
-    if x0_pred_seg is not None:
-        plot_contour(image, x0_pred_seg)
-        ax.imshow(image)
-        ax.set_title('Pred, time: %s -> time: %s' % (t_list[1].item(), t_list[0].item()))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 12)
