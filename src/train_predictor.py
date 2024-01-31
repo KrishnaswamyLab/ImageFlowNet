@@ -52,7 +52,7 @@ def train(config: AttributeHashmap):
         }
     )
     transforms_list = [train_transform, None, None]
-    train_set, val_set, test_set, num_image_channel = \
+    train_set, val_set, test_set, num_image_channel, max_t = \
         prepare_dataset(config=config, transforms_list=transforms_list)
 
     log('Using device: %s' % device, to_console=True)
@@ -108,7 +108,7 @@ def train(config: AttributeHashmap):
             model, ema, optimizer, scheduler = \
                 train_epoch_I2SB(config=config, device=device, train_set=train_set, model=model,
                                  epoch_idx=epoch_idx, ema=ema, optimizer=optimizer, scheduler=scheduler,
-                                 mse_loss=mse_loss, backprop_freq=backprop_freq)
+                                 mse_loss=mse_loss, backprop_freq=backprop_freq, max_t=max_t)
         else:
             model, ema, optimizer, scheduler = \
                 train_epoch(config=config, device=device, train_set=train_set, model=model,
@@ -119,7 +119,7 @@ def train(config: AttributeHashmap):
             model.eval()
             if config.model == 'I2SBUNet':
                 val_recon_psnr, val_pred_psnr, val_seg_dice_xT = \
-                    val_epoch_I2SB(config=config, device=device, val_set=val_set, model=model, epoch_idx=epoch_idx, max_t=train_set.dataset.dataset.max_t)
+                    val_epoch_I2SB(config=config, device=device, val_set=val_set, model=model, epoch_idx=epoch_idx, max_t=max_t)
             else:
                 val_recon_psnr, val_pred_psnr, val_seg_dice_xT = \
                     val_epoch(config=config, device=device, val_set=val_set, model=model, epoch_idx=epoch_idx)
@@ -275,7 +275,8 @@ def train_epoch_I2SB(config: AttributeHashmap,
                      optimizer: torch.optim.Optimizer,
                      scheduler: torch.optim.lr_scheduler._LRScheduler,
                      mse_loss: torch.nn.Module,
-                     backprop_freq: int):
+                     backprop_freq: int,
+                     max_t: int):
     '''
     Training epoch for I2SB: Image-to-Image Schrodinger Bridge.
     '''
@@ -305,10 +306,10 @@ def train_epoch_I2SB(config: AttributeHashmap,
 
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
-        delta_t_normalized = torch.diff(t_list) / train_set.dataset.dataset.max_t
-        step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized) + 1, (x_end.shape[0],))
-        x_interp = model.diffusion.q_sample(step, x_end, x_start)
-        x_interp_pseudo_gt = _compute_label(model.diffusion, step, x_end, x_interp)
+        delta_t_normalized = torch.diff(t_list) / max_t
+        step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized), (x_end.shape[0],))
+        xt = model.diffusion.q_sample(step, x_end, x_start)
+        x_interp_pseudo_gt = compute_diffusion_label(model.diffusion, step, x_end, xt)
         diffusion_time = model.step_to_t[step]
 
         x_interp_pred = model(x=x_start, t=diffusion_time)
@@ -385,7 +386,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
 
     return model, ema, optimizer, scheduler
 
-def _compute_label(diffusion, step, x0, xt):
+def compute_diffusion_label(diffusion, step, x0, xt):
     """ I2SB Eq 12 """
     std_fwd = diffusion.get_std_fwd(step, xdim=x0.shape[1:])
     label = (xt - x0) / std_fwd
@@ -513,7 +514,7 @@ def val_epoch_I2SB(config: AttributeHashmap,
 
         x_start_recon = x_start_recon[:, -1, ...]
         x_end_recon = x_end_recon[:, -1, ...]
-        x_end_pred = x_end_pred[:, -1, ...]
+        x_end_pred = x_end_pred[:, -1, ...].to(device)
 
         x_start_seg = segmentor(x_start) > 0.5
         x_end_seg = segmentor(x_end) > 0.5

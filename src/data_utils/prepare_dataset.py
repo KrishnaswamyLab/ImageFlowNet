@@ -32,8 +32,6 @@ def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, Non
         raise ValueError(
             'Dataset not found. Check `dataset_name` in config yaml file.')
 
-    num_image_channel = dataset.num_image_channel()
-
     # Load into DataLoader
     ratios = [float(c) for c in config.train_val_test_ratio.split(':')]
     ratios = tuple([c / sum(ratios) for c in ratios])
@@ -77,7 +75,7 @@ def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, Non
                           shuffle=False,
                           num_workers=config.num_workers)
 
-    return train_set, val_set, test_set, num_image_channel
+    return train_set, val_set, test_set, dataset.num_image_channel(), dataset.max_t
 
 
 def prepare_dataset_segmentation(config: AttributeHashmap, transforms_list = [None, None, None]):
@@ -92,8 +90,6 @@ def prepare_dataset_segmentation(config: AttributeHashmap, transforms_list = [No
     else:
         raise ValueError(
             'Dataset not found. Check `dataset_name` in config yaml file.')
-
-    num_image_channel = dataset.num_image_channel()
 
     # Load into DataLoader
     ratios = [float(c) for c in config.train_val_test_ratio.split(':')]
@@ -132,4 +128,4 @@ def prepare_dataset_segmentation(config: AttributeHashmap, transforms_list = [No
                           shuffle=False,
                           num_workers=config.num_workers)
 
-    return train_set, val_set, test_set, num_image_channel
+    return train_set, val_set, test_set, dataset.num_image_channel()
