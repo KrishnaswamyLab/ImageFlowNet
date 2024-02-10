@@ -34,7 +34,7 @@ from nn.unet_i2sb import I2SBUNet
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-2])
 sys.path.insert(0, import_dir + '/external_src/I2SB/')
 from i2sb.diffusion import Diffusion
-from i2sb.runner import build_optimizer_sched, make_beta_schedule
+from i2sb.runner import make_beta_schedule
 
 
 def train(config: AttributeHashmap):
@@ -44,7 +44,7 @@ def train(config: AttributeHashmap):
     train_transform = A.Compose(
         [
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, border_mode=cv2.BORDER_REPLICATE, p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=30, p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         ],
         additional_targets={
@@ -76,7 +76,7 @@ def train(config: AttributeHashmap):
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.99)
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9)
 
     model.to(device)
     model.init_params()
@@ -100,7 +100,7 @@ def train(config: AttributeHashmap):
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
 
-    recon_psnr_thr = 30
+    recon_psnr_thr = 20
     recon_good_enough = False
 
     for epoch_idx in tqdm(range(config.max_epochs)):
@@ -150,16 +150,16 @@ def train(config: AttributeHashmap):
 
 
 def train_epoch(config: AttributeHashmap,
-                     device: torch.device,
-                     train_set: Dataset,
-                     model: torch.nn.Module,
-                     epoch_idx: int,
-                     ema: ExponentialMovingAverage,
-                     optimizer: torch.optim.Optimizer,
-                     scheduler: torch.optim.lr_scheduler._LRScheduler,
-                     mse_loss: torch.nn.Module,
-                     backprop_freq: int,
-                     train_time_dependent: bool):
+                device: torch.device,
+                train_set: Dataset,
+                model: torch.nn.Module,
+                epoch_idx: int,
+                ema: ExponentialMovingAverage,
+                optimizer: torch.optim.Optimizer,
+                scheduler: torch.optim.lr_scheduler._LRScheduler,
+                mse_loss: torch.nn.Module,
+                backprop_freq: int,
+                train_time_dependent: bool):
     '''
     Training epoch for many models.
     '''
@@ -218,7 +218,6 @@ def train_epoch(config: AttributeHashmap,
         if train_time_dependent:
             assert torch.diff(t_list).item() > 0
             x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
-
             loss_pred = mse_loss(x_end, x_end_pred)
             train_loss_pred += loss_pred.item()
 
@@ -428,7 +427,6 @@ def val_epoch(config: AttributeHashmap,
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-
         x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
         x_start_seg = segmentor(x_start) > 0.5
@@ -715,6 +713,7 @@ def plot_contour(image, label):
 def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path: str,
                       x0_true_seg=None, xT_pred_seg=None, xT_true_seg=None) -> None:
     fig_sbs = plt.figure(figsize=(24, 10))
+    plt.rcParams['font.family'] = 'serif'
 
     aspect_ratio = x0_true.shape[0] / x0_true.shape[1]
 
@@ -726,24 +725,24 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     # First column: Ground Truth.
     ax = fig_sbs.add_subplot(2, 6, 1)
     ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
-    ax.set_title('GT, time: %s' % t_list[0].item())
+    ax.set_title('GT(t=0), time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 7)
     ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
-    ax.set_title('GT, time: %s' % t_list[1].item())
+    ax.set_title('GT(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
     # Second column: Reconstruction.
     ax = fig_sbs.add_subplot(2, 6, 2)
     ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
-    ax.set_title('Recon, time: %s' % t_list[0].item())
+    ax.set_title('Recon(t=0), time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 8)
     ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
-    ax.set_title('Recon, time: %s' % t_list[1].item())
+    ax.set_title('Recon(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
@@ -753,17 +752,19 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 9)
     ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
-    ax.set_title('Pred, time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
+    ax.set_title('Pred(t=T), time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
-    # Fourth column: |Ground Truth - Prediction|.
+    # Fourth column: |Ground Truth t1 - Ground Truth t2|, |Ground Truth - Prediction|.
     ax = fig_sbs.add_subplot(2, 6, 4)
+    ax.imshow(np.clip(np.abs((x0_true + 1) / 2 - (xT_true + 1) / 2), 0, 1))
+    ax.set_title('|GT(t=0) - GT(t=T)|, time: %s and %s' % (t_list[0].item(), t_list[1].item()))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 10)
     ax.imshow(np.clip(np.abs((xT_true + 1) / 2 - (xT_pred + 1) / 2), 0, 1))
-    ax.set_title('|GT - Pred|, time: %s' % t_list[1].item())
+    ax.set_title('|GT(t=T) - Pred(t=T)|, time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
@@ -773,7 +774,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     if x0_true_seg is not None:
         plot_contour(image, x0_true_seg)
         ax.imshow(image)
-        ax.set_title('GT, time: %s' % t_list[0].item())
+        ax.set_title('GT(t=0), time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 11)
@@ -781,7 +782,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     if xT_true_seg is not None:
         plot_contour(image, xT_true_seg)
         ax.imshow(image)
-        ax.set_title('GT, time: %s' % t_list[1].item())
+        ax.set_title('GT(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
@@ -794,7 +795,7 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     if xT_pred_seg is not None:
         plot_contour(image, xT_pred_seg)
         ax.imshow(image)
-        ax.set_title('Pred, time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
+        ax.set_title('Pred(t=T), time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 

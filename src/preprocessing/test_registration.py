@@ -134,8 +134,8 @@ def register(predict_config):
     # fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/52862_LE/52862 04 F2 LE LS.jpg'
     # moving_path = '../../data/retina_areds/AREDS_2014_images_512x512/51570_LE/51570 20 F2 LE LS.jpg'
     # fixed_path = '../../data/retina_areds/AREDS_2014_images_512x512/51570_LE/51570 03 F2 LE LS.jpg'
-    moving_path = '../../data/retina_ucsf/UCSF_images_512x512/A02_LE/A02_LE_24_1BAF.png'
-    fixed_path = '../../data/retina_ucsf/UCSF_images_512x512/A02_LE/A02_LE_00_1BAF.png'
+    moving_path = '../../data/retina_ucsf/UCSF_images_512x512/B08_LE/B08_LE_00_4BAF.png'
+    fixed_path = '../../data/retina_ucsf/UCSF_images_512x512/B08_LE/B08_LE_18_1BAF.png'
 
     # SuperRetina config
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
