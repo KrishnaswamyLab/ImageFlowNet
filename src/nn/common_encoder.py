@@ -10,19 +10,27 @@ class Encoder(BaseNetwork):
                  depth: int,
                  conv_block: torch.nn.Module,
                  non_linearity: torch.nn.Module,
-                 bilinear: bool = True):
+                 bilinear: bool = True,
+                 use_bn: bool = True):
         super().__init__()
 
         self.depth = depth
         self.non_linearity = non_linearity
         self.bilinear = bilinear
+        self.use_bn = use_bn
 
         self.conv1x1 = torch.nn.Conv2d(in_channels, n_f, 1, 1)
         self.down_list = torch.nn.ModuleList([])
         self.down_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
             self.down_list.append(conv_block(n_f * 2 ** d))
-            self.down_conn_list.append(torch.nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1))
+            if self.use_bn:
+                self.down_conn_list.append(torch.nn.Sequential(
+                    torch.nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1),
+                    torch.nn.BatchNorm2d(n_f * 2 ** (d + 1)),
+                ))
+            else:
+                self.down_conn_list.append(torch.nn.Conv2d(n_f * 2 ** d, n_f * 2 ** (d + 1), 1, 1))
 
         self.bottleneck = conv_block(n_f * 2 ** self.depth)
 

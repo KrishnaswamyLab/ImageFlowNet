@@ -13,7 +13,8 @@ class ODEUNet(BaseNetwork):
                  use_residual: bool = False,
                  in_channels: int = 3,
                  out_channels: int = 3,
-                 non_linearity: str = 'relu'):
+                 non_linearity: str = 'relu',
+                 use_bn: bool = True):
         '''
         A UNet model with ODE.
 
@@ -44,6 +45,7 @@ class ODEUNet(BaseNetwork):
             self.non_linearity = torch.nn.ReLU(inplace=True)
         elif self.non_linearity_str == 'softplus':
             self.non_linearity = torch.nn.Softplus()
+        self.use_bn = use_bn
 
         n_f = num_filters  # shorthand
 
@@ -67,8 +69,14 @@ class ODEUNet(BaseNetwork):
         self.up_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
             self.ode_list.append(ODEBlock(ODEfunc(dim=n_f * 2 ** d)))
-            self.up_conn_list.append(torch.nn.Conv2d(n_f * 3 * 2 ** d, n_f * 2 ** d, 1, 1))
             self.up_list.append(upconv_block(n_f * 2 ** d))
+            if self.use_bn:
+                self.up_conn_list.append(torch.nn.Sequential(
+                    torch.nn.Conv2d(n_f * 3 * 2 ** d, n_f * 2 ** d, 1, 1),
+                    torch.nn.BatchNorm2d(n_f * 2 ** d),
+                ))
+            else:
+                self.up_conn_list.append(torch.nn.Conv2d(n_f * 3 * 2 ** d, n_f * 2 ** d, 1, 1))
         self.ode_list = self.ode_list[::-1]
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
