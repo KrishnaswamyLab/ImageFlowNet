@@ -19,7 +19,7 @@ from nn.scheduler import LinearWarmupCosineAnnealingLR
 from utils.attribute_hashmap import AttributeHashmap
 from utils.early_stop import EarlyStopping
 from utils.log_util import log
-from utils.metrics import psnr, ssim, dice_coeff
+from utils.metrics import psnr, ssim, dice_coeff, hausdorff
 from utils.parse import parse_settings
 from utils.seed import seed_everything
 
@@ -241,6 +241,10 @@ def train_epoch(config: AttributeHashmap,
         x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
             numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred)
 
+        # NOTE: Convert to image with normal dynamic range.
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            cast_to_0to1(x0_true, x0_recon, xT_true, xT_recon, xT_pred)
+
         train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
         train_pred_psnr += psnr(xT_true, xT_pred)
@@ -326,23 +330,6 @@ def train_epoch_I2SB(config: AttributeHashmap,
             optimizer.zero_grad()
             ema.update()
 
-        # x_start, x_end, x_interp, x_interp_pseudo_gt, x_interp_pred = \
-        #     numpy_variables(x_start, x_end, x_interp, x_interp_pseudo_gt, x_interp_pred)
-        # fig = plt.figure(figsize=(10, 4))
-        # ax = fig.add_subplot(1, 5, 1)
-        # ax.imshow(np.clip((x_start + 1) / 2, 0, 1), cmap='gray')
-        # ax = fig.add_subplot(1, 5, 2)
-        # ax.imshow(np.clip((x_end + 1) / 2, 0, 1), cmap='gray')
-        # ax = fig.add_subplot(1, 5, 3)
-        # ax.imshow(np.clip((x_interp + 1) / 2, 0, 1), cmap='gray')
-        # ax = fig.add_subplot(1, 5, 4)
-        # ax.imshow(np.clip((x_interp_pseudo_gt + 1) / 2, 0, 1), cmap='gray')
-        # ax = fig.add_subplot(1, 5, 5)
-        # ax.imshow(np.clip((x_interp_pred + 1) / 2, 0, 1), cmap='gray')
-        # fig.savefig('test.png')
-        # import pdb
-        # pdb.set_trace()
-
         # There are only for plotting purposes.
         model.eval()
         # Almost reconstruction (step = [0, 1]).
@@ -362,6 +349,10 @@ def train_epoch_I2SB(config: AttributeHashmap,
 
         x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
             numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred)
+
+        # NOTE: Convert to image with normal dynamic range.
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            cast_to_0to1(x0_true, x0_recon, xT_true, xT_recon, xT_pred)
 
         train_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         train_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
@@ -436,6 +427,10 @@ def val_epoch(config: AttributeHashmap,
         x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
             numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
                             x_start_seg, x_end_seg, x_end_pred_seg)
+
+        # NOTE: Convert to image with normal dynamic range.
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            cast_to_0to1(x0_true, x0_recon, xT_true, xT_recon, xT_pred)
 
         val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
@@ -522,6 +517,10 @@ def val_epoch_I2SB(config: AttributeHashmap,
             numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
                             x_start_seg, x_end_seg, x_end_pred_seg)
 
+        # NOTE: Convert to image with normal dynamic range.
+        x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+            cast_to_0to1(x0_true, x0_recon, xT_true, xT_recon, xT_pred)
+
         val_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
         val_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
         val_pred_psnr += psnr(xT_true, xT_pred)
@@ -554,22 +553,29 @@ def val_epoch_I2SB(config: AttributeHashmap,
 def test(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
-    train_set, val_set, test_set, num_image_channel = \
+    train_set, val_set, test_set, num_image_channel, max_t = \
         prepare_dataset(config=config)
 
     # Build the model
+    kwargs = {}
+    if config.model == 'I2SBUNet':
+        step_to_t = torch.linspace(1e-4, 1, config.diffusion_interval, device=device) * config.diffusion_interval
+        betas = make_beta_schedule(n_timestep=config.diffusion_interval, linear_end=1 / config.diffusion_interval)
+        betas = np.concatenate([betas[:config.diffusion_interval//2], np.flip(betas[:config.diffusion_interval//2])])
+        diffusion = Diffusion(betas, device)
+        kwargs = {'step_to_t': step_to_t, 'diffusion': diffusion}
+
     try:
-        model = globals()[config.model](num_filters=config.num_filters,
+        model = globals()[config.model](device=device,
+                                        num_filters=config.num_filters,
                                         depth=config.depth,
                                         in_channels=num_image_channel,
-                                        out_channels=num_image_channel)
+                                        out_channels=num_image_channel,
+                                        **kwargs)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)
-    model.load_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'), device=device)
-    log('%s: Model weights successfully loaded.' % config.model,
-        to_console=True)
 
     segmentor = torch.nn.Sequential(
         monai.networks.nets.DynUNet(
@@ -584,92 +590,137 @@ def test(config: AttributeHashmap):
     segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
     segmentor.eval()
 
-    save_path_fig_summary = '%s/results/summary.png' % config.save_folder
-    os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
+    for best_type in ['pred psnr', 'seg dice']:
+        if best_type == 'pred psnr':
 
-    mse_loss = torch.nn.MSELoss()
+            model.load_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'), device=device)
+            log('%s: Model weights successfully loaded.' % config.model,
+                to_console=True)
 
-    deltaT_list, psnr_list, ssim_list = [], [], []
-    test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim = 0, 0, 0, 0, 0
-    for iter_idx, (images, timestamps) in enumerate(tqdm(test_set)):
-        assert images.shape[1] == 2
-        assert timestamps.shape[1] == 2
+            save_path_fig_summary = '%s/results_best_pred_psnr/summary.png' % config.save_folder
+            os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
 
-        assert images.shape[1] == 2
-        assert timestamps.shape[1] == 2
+        elif best_type == 'seg dice':
 
-        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+            model.load_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'), device=device)
+            log('%s: Model weights successfully loaded.' % config.model,
+                to_console=True)
 
-        x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-        x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-        x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+            save_path_fig_summary = '%s/results_best_seg_dice/summary.png' % config.save_folder
+            os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
 
-        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
-        loss_pred = mse_loss(x_end, x_end_pred)
+        mse_loss = torch.nn.MSELoss()
 
-        loss = loss_recon + loss_pred
-        test_loss += loss.item()
+        deltaT_list, psnr_list, ssim_list = [], [], []
+        test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim = 0, 0, 0, 0, 0
+        test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse = 0, 0, 0, 0
+        for iter_idx, (images, timestamps) in enumerate(tqdm(test_set)):
+            assert images.shape[1] == 2
+            assert timestamps.shape[1] == 2
 
-        x_start_seg = segmentor(x_start) > 0.5
-        x_end_seg = segmentor(x_end) > 0.5
-        x_end_pred_seg = segmentor(x_end_pred) > 0.5
+            assert images.shape[1] == 2
+            assert timestamps.shape[1] == 2
 
-        x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
-            numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
-                            x_start_seg, x_end_seg, x_end_pred_seg)
+            x_start, x_end, t_list = convert_variables(images, timestamps, device)
 
-        test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
-        test_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-        test_pred_psnr += psnr(xT_true, xT_pred)
-        test_pred_ssim += ssim(xT_true, xT_pred)
+            if config.model == 'I2SBUNet':
+                # Almost reconstruction (step = [0, 1]).
+                _, x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+                _, x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
 
-        # Plot an overall scattering plot.
-        deltaT_list.append(0)
-        psnr_list.append(psnr(x0_true, x0_recon))
-        ssim_list.append(ssim(x0_true, x0_recon))
-        deltaT_list.append(0)
-        psnr_list.append(psnr(xT_true, xT_recon))
-        ssim_list.append(ssim(xT_true, xT_recon))
-        deltaT_list.append((t_list[0] - t_list[1]).item())
-        deltaT_list.append((t_list[1] - t_list[0]).item())
-        psnr_list.append(psnr(xT_true, xT_pred))
-        ssim_list.append(ssim(xT_true, xT_pred))
+                assert torch.diff(t_list).item() > 0
+                delta_t_normalized = torch.diff(t_list) / max_t
+                step_max = int(config.diffusion_interval * delta_t_normalized)
+                _, x_end_pred = model.ddpm_sampling(x_start=x_start,
+                                                    steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
-        fig_summary = plt.figure(figsize=(12, 8))
-        ax = fig_summary.add_subplot(2, 1, 1)
-        ax.spines[['right', 'top']].set_visible(False)
-        ax.tick_params(axis='both', which='major', labelsize=15)
-        ax.scatter(deltaT_list, psnr_list, color='black', s=50, alpha=0.5)
-        ax.set_xlabel('Time difference', fontsize=20)
-        ax.set_ylabel('PSNR', fontsize=20)
-        ax = fig_summary.add_subplot(2, 1, 2)
-        ax.spines[['right', 'top']].set_visible(False)
-        ax.tick_params(axis='both', which='major', labelsize=15)
-        ax.scatter(deltaT_list, ssim_list, color='crimson', s=50, alpha=0.5)
-        ax.set_xlabel('Time difference', fontsize=20)
-        ax.set_ylabel('SSIM', fontsize=20)
-        fig_summary.tight_layout()
-        fig_summary.savefig(save_path_fig_summary)
-        plt.close(fig=fig_summary)
+                x_start_recon = x_start_recon[:, -1, ...].to(device)
+                x_end_recon = x_end_recon[:, -1, ...].to(device)
+                x_end_pred = x_end_pred[:, -1, ...].to(device)
+            else:
+                x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
+                x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
 
-        # Plot the side-by-side figures.
-        if iter_idx < 20:
+            loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+            loss_pred = mse_loss(x_end, x_end_pred)
+
+            loss = loss_recon + loss_pred
+            test_loss += loss.item()
+
+            x_start_seg = segmentor(x_start) > 0.5
+            x_end_seg = segmentor(x_end) > 0.5
+            x_end_pred_seg = segmentor(x_end_pred) > 0.5
+
+            x0_true, x0_recon, xT_true, xT_recon, xT_pred, x0_seg, xT_seg, xT_pred_seg = \
+                numpy_variables(x_start, x_start_recon, x_end, x_end_recon, x_end_pred,
+                                x_start_seg, x_end_seg, x_end_pred_seg)
+
+            # NOTE: Convert to image with normal dynamic range.
+            x0_true, x0_recon, xT_true, xT_recon, xT_pred = \
+                cast_to_0to1(x0_true, x0_recon, xT_true, xT_recon, xT_pred)
+
+            test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
+            test_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
+            test_pred_psnr += psnr(xT_true, xT_pred)
+            test_pred_ssim += ssim(xT_true, xT_pred)
+
+            test_seg_dice += dice_coeff(xT_pred_seg, xT_seg)
+            test_seg_hd += hausdorff(xT_pred_seg, xT_seg)
+            test_residual_mae += np.mean(np.abs(xT_pred - xT_true))
+            test_residual_mse += np.mean((xT_pred - xT_true)**2)
+
+            # Plot an overall scattering plot.
+            deltaT_list.append(0)
+            psnr_list.append(psnr(x0_true, x0_recon))
+            ssim_list.append(ssim(x0_true, x0_recon))
+            deltaT_list.append(0)
+            psnr_list.append(psnr(xT_true, xT_recon))
+            ssim_list.append(ssim(xT_true, xT_recon))
+            deltaT_list.append((t_list[1] - t_list[0]).item())
+            psnr_list.append(psnr(xT_true, xT_pred))
+            ssim_list.append(ssim(xT_true, xT_pred))
+
+            fig_summary = plt.figure(figsize=(12, 8))
+            ax = fig_summary.add_subplot(2, 1, 1)
+            ax.spines[['right', 'top']].set_visible(False)
+            ax.tick_params(axis='both', which='major', labelsize=15)
+            ax.scatter(deltaT_list, psnr_list, color='black', s=50, alpha=0.5)
+            ax.set_xlabel('Time difference', fontsize=20)
+            ax.set_ylabel('PSNR', fontsize=20)
+            ax = fig_summary.add_subplot(2, 1, 2)
+            ax.spines[['right', 'top']].set_visible(False)
+            ax.tick_params(axis='both', which='major', labelsize=15)
+            ax.scatter(deltaT_list, ssim_list, color='crimson', s=50, alpha=0.5)
+            ax.set_xlabel('Time difference', fontsize=20)
+            ax.set_ylabel('SSIM', fontsize=20)
+            fig_summary.tight_layout()
+            fig_summary.savefig(save_path_fig_summary)
+            plt.close(fig=fig_summary)
+
+            # Plot the side-by-side figures.
             save_path_fig_sbs = '%s/figure_%s.png' % (
                 os.path.dirname(save_path_fig_summary), str(iter_idx + 1).zfill(5))
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs,
                               x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
-    test_loss = test_loss / len(test_set.dataset)
-    test_recon_psnr = test_recon_psnr / len(test_set.dataset)
-    test_recon_ssim = test_recon_ssim / len(test_set.dataset)
-    test_pred_psnr = test_pred_psnr / len(test_set.dataset)
-    test_pred_ssim = test_pred_ssim / len(test_set.dataset)
+        test_loss = test_loss / len(test_set.dataset)
+        test_recon_psnr = test_recon_psnr / len(test_set.dataset)
+        test_recon_ssim = test_recon_ssim / len(test_set.dataset)
+        test_pred_psnr = test_pred_psnr / len(test_set.dataset)
+        test_pred_ssim = test_pred_ssim / len(test_set.dataset)
 
-    log('Test loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-        % (test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr,
-           test_pred_ssim),
-        filepath=config.log_dir,
-        to_console=True)
+        test_seg_dice = test_seg_dice / len(test_set.dataset)
+        test_seg_hd = test_seg_hd / len(test_set.dataset)
+        test_residual_mae = test_residual_mae / len(test_set.dataset)
+        test_residual_mse = test_residual_mse / len(test_set.dataset)
+
+        log('[Best %s] Test loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
+            % (best_type, test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim) + \
+            ' DSC (pred): %.3f, HD (pred): %.3f, MAE (pred): %.3f, MSE (pred): %.3f'
+            % (test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse),
+            filepath=config.log_dir,
+            to_console=True)
     return
 
 
@@ -690,6 +741,12 @@ def numpy_variables(*tensors: torch.Tensor) -> Tuple[np.array]:
     Some repetitive numpy casting of variables.
     '''
     return [_tensor.cpu().detach().numpy().squeeze(0).transpose(1, 2, 0) for _tensor in tensors]
+
+def cast_to_0to1(*np_arrays: np.array) -> Tuple[np.array]:
+    '''
+    Cast image to normal dynamic range between 0 and 1.
+    '''
+    return [np.clip((_arr + 1) / 2, 0, 1) for _arr in np_arrays]
 
 def gray_to_rgb(*tensors: torch.Tensor) -> Tuple[np.array]:
     rgb_list = []
@@ -724,24 +781,25 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
 
     # First column: Ground Truth.
     ax = fig_sbs.add_subplot(2, 6, 1)
-    ax.imshow(np.clip((x0_true + 1) / 2, 0, 1))
-    ax.set_title('GT(t=0), time: %s' % t_list[0].item())
+    ax.imshow(x0_true)
+    ax.set_title('GT(t=0), time: %s\n[vs GT(t=T)]: PSNR=%.2f, SSIM=%.3f' % (
+        t_list[0].item(), psnr(x0_true, xT_true), ssim(x0_true, xT_true)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 7)
-    ax.imshow(np.clip((xT_true + 1) / 2, 0, 1))
+    ax.imshow(xT_true)
     ax.set_title('GT(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
     # Second column: Reconstruction.
     ax = fig_sbs.add_subplot(2, 6, 2)
-    ax.imshow(np.clip((x0_recon + 1) / 2, 0, 1))
+    ax.imshow(x0_recon)
     ax.set_title('Recon(t=0), time: %s' % t_list[0].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 8)
-    ax.imshow(np.clip((xT_recon + 1) / 2, 0, 1))
+    ax.imshow(xT_recon)
     ax.set_title('Recon(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
@@ -751,37 +809,39 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 9)
-    ax.imshow(np.clip((xT_pred + 1) / 2, 0, 1))
-    ax.set_title('Pred(t=T), time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
+    ax.imshow(xT_pred)
+    ax.set_title('Pred(t=T), time: %s -> time: %s\n[vs GT(t=T)]: PSNR=%.2f, SSIM=%.3f' % (
+        t_list[0].item(), t_list[1].item(), psnr(xT_pred, xT_true), ssim(xT_pred, xT_true)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
     # Fourth column: |Ground Truth t1 - Ground Truth t2|, |Ground Truth - Prediction|.
     ax = fig_sbs.add_subplot(2, 6, 4)
-    ax.imshow(np.clip(np.abs((x0_true + 1) / 2 - (xT_true + 1) / 2), 0, 1))
-    ax.set_title('|GT(t=0) - GT(t=T)|, time: %s and %s' % (t_list[0].item(), t_list[1].item()))
+    ax.imshow(np.abs(x0_true - xT_true))
+    ax.set_title('|GT(t=0) - GT(t=T)|, time: %s and %s\n[MAE=%.4f, MSE=%.4f]' % (
+        t_list[0].item(), t_list[1].item(), np.mean(np.abs(x0_true - xT_true)), np.mean((x0_true - xT_true)**2)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 10)
-    ax.imshow(np.clip(np.abs((xT_true + 1) / 2 - (xT_pred + 1) / 2), 0, 1))
-    ax.set_title('|GT(t=T) - Pred(t=T)|, time: %s' % t_list[1].item())
+    ax.imshow(np.abs(xT_pred - xT_true))
+    ax.set_title('|Pred(t=T) - GT(t=T)|, time: %s\n[MAE=%.4f, MSE=%.4f]' % (
+        t_list[1].item(), np.mean(np.abs(xT_pred - xT_true)), np.mean((xT_pred - xT_true)**2)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 
     # Fifth column: Ground Truth with segmentation.
     ax = fig_sbs.add_subplot(2, 6, 5)
-    image = np.clip((x0_true + 1) / 2, 0, 1)
     if x0_true_seg is not None:
-        plot_contour(image, x0_true_seg)
-        ax.imshow(image)
-        ax.set_title('GT(t=0), time: %s' % t_list[0].item())
+        plot_contour(x0_true, x0_true_seg)
+        ax.imshow(x0_true)
+        ax.set_title('GT(t=0), time: %s\n[vs GT(t=T)]: DSC=%.3f, HD=%.2f' % (
+            t_list[0].item(), dice_coeff(x0_true_seg, xT_true_seg), hausdorff(x0_true_seg, xT_true_seg)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 11)
-    image = np.clip((xT_true + 1) / 2, 0, 1)
     if xT_true_seg is not None:
-        plot_contour(image, xT_true_seg)
-        ax.imshow(image)
+        plot_contour(xT_true, xT_true_seg)
+        ax.imshow(xT_true)
         ax.set_title('GT(t=T), time: %s' % t_list[1].item())
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
@@ -791,11 +851,11 @@ def plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, sav
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
     ax = fig_sbs.add_subplot(2, 6, 12)
-    image = np.clip((xT_pred + 1) / 2, 0, 1)
     if xT_pred_seg is not None:
-        plot_contour(image, xT_pred_seg)
-        ax.imshow(image)
-        ax.set_title('Pred(t=T), time: %s -> time: %s' % (t_list[0].item(), t_list[1].item()))
+        plot_contour(xT_pred, xT_pred_seg)
+        ax.imshow(xT_pred)
+        ax.set_title('Pred(t=T), time: %s -> time: %s\n[vs GT(t=T)]: DSC=%.3f, HD=%.2f' % (
+            t_list[0].item(), t_list[1].item(), dice_coeff(xT_pred_seg, xT_true_seg), hausdorff(xT_pred_seg, xT_true_seg)))
     ax.set_axis_off()
     ax.set_aspect(aspect_ratio)
 

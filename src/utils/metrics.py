@@ -2,9 +2,9 @@ import numpy as np
 from skimage.metrics import hausdorff_distance, structural_similarity
 
 
-def psnr(image1, image2, max_value=2):
+def psnr(image1, image2, max_value=1):
     '''
-    Assuming data range is [-1, 1].
+    Assuming data range is [0, 1].
     '''
     assert image1.shape == image2.shape
 
@@ -14,11 +14,11 @@ def psnr(image1, image2, max_value=2):
     return 20 * np.log10(max_value / np.sqrt(mse + eps))
 
 
-def ssim(image1: np.array, image2: np.array, data_range=2, **kwargs) -> float:
+def ssim(image1: np.array, image2: np.array, data_range=1, **kwargs) -> float:
     '''
     Please make sure the data are provided in [H, W, C] shape.
 
-    Assuming data range is [-1, 1] --> `data_range` = 2.
+    Assuming data range is [0, 1] --> `data_range` = 1.
     '''
     assert image1.shape == image2.shape
 
