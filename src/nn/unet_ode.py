@@ -1,5 +1,6 @@
 import os
 import sys
+import numpy as np
 import torch
 from .base import BaseNetwork
 from .nn_utils import ODEfunc, ODEBlock
@@ -9,6 +10,7 @@ sys.path.insert(0, import_dir + '/external_src/I2SB/')
 from guided_diffusion.script_util import create_model
 from guided_diffusion.unet import timestep_embedding
 
+def count_parameters(model): return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 class ODEUNet(BaseNetwork):
 
@@ -52,19 +54,21 @@ class ODEUNet(BaseNetwork):
             use_new_attention_order=False)
 
         # Record the channel dimensions by passing in a dummy tensor.
-        channel_dims = []
+        self.dim_list = []
         h_dummy = torch.zeros((1, 1, image_size, image_size)).type(self.unet.dtype)
         t_dummy = torch.zeros((1)).type(self.unet.dtype)
         emb = self.unet.time_embed(timestep_embedding(t_dummy, self.unet.model_channels))
         for module in self.unet.input_blocks:
             h_dummy = module(h_dummy, emb)
-            channel_dims.append(h_dummy.shape[1])
+            if h_dummy.shape[1] not in self.dim_list:
+                self.dim_list.append(h_dummy.shape[1])
         h_dummy = self.unet.middle_block(h_dummy, emb)
-        channel_dims.append(h_dummy.shape[1])
+        if h_dummy.shape[1] not in self.dim_list:
+            self.dim_list.append(h_dummy.shape[1])
 
         # Construct the ODE modules.
         self.ode_list = torch.nn.ModuleList([])
-        for dim in channel_dims:
+        for dim in self.dim_list:
             self.ode_list.append(ODEBlock(ODEfunc(dim=dim)))
 
         self.unet.to(self.device)
@@ -100,18 +104,18 @@ class ODEUNet(BaseNetwork):
         h_skip_connection = []
         emb = self.unet.time_embed(timestep_embedding(t, self.unet.model_channels))
 
-        assert len(self.unet.input_blocks) == len(self.ode_list) - 1
-
         h = x.type(self.unet.dtype)
-        for i, module in enumerate(self.unet.input_blocks):
+        for module in self.unet.input_blocks:
             h = module(h, emb)
             if use_ode:
-                h = self.ode_list[i](h, integration_time)
+                ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
+                h = self.ode_list[ode_idx](h, integration_time)
             h_skip_connection.append(h)
 
         h = self.unet.middle_block(h, emb)
         if use_ode:
-            h = self.ode_list[-1](h, integration_time)
+            ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
+            h = self.ode_list[ode_idx](h, integration_time)
 
         for module in self.unet.output_blocks:
             h = torch.cat([h, h_skip_connection.pop()], dim=1)
