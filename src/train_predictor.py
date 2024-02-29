@@ -7,6 +7,7 @@ from typing import Tuple
 
 from matplotlib import pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from torch_ema import ExponentialMovingAverage
 from torch.utils.data import Dataset
@@ -36,6 +37,11 @@ sys.path.insert(0, import_dir + '/external_src/I2SB/')
 from i2sb.diffusion import Diffusion
 from i2sb.runner import make_beta_schedule
 
+
+def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Tensor:
+    intensity = max_intensity * torch.rand(1).to(img.device)
+    noise = intensity * torch.randn_like(img)
+    return img + noise
 
 def train(config: AttributeHashmap):
     device = torch.device(
@@ -193,13 +199,14 @@ def train_epoch(config: AttributeHashmap,
         assert timestamps.shape[1] == 2
 
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_start_noisy, x_end_noisy = add_random_noise(x_start), add_random_noise(x_end)
 
         ################### Recon Loss to update Encoder/Decoder ##################
         # Unfreeze the model.
         model.unfreeze()
 
-        x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
-        x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
+        x_start_recon = model(x=x_start_noisy, t=torch.zeros(1).to(device))
+        x_end_recon = model(x=x_end_noisy, t=torch.zeros(1).to(device))
 
         loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
         train_loss_recon += loss_recon.item()
@@ -217,7 +224,7 @@ def train_epoch(config: AttributeHashmap,
 
         if train_time_dependent:
             assert torch.diff(t_list).item() > 0
-            x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+            x_end_pred = model(x=x_start_noisy, t=torch.diff(t_list) * config.t_multiplier)
             loss_pred = mse_loss(x_end, x_end_pred)
             train_loss_pred += loss_pred.item()
 
@@ -228,7 +235,7 @@ def train_epoch(config: AttributeHashmap,
         else:
             # Will not train the time-dependent modules until the reconstruction is good enough.
             with torch.no_grad():
-                x_end_pred = model(x=x_start, t=torch.diff(t_list) * config.t_multiplier)
+                x_end_pred = model(x=x_start_noisy, t=torch.diff(t_list) * config.t_multiplier)
                 loss_pred = mse_loss(x_end, x_end_pred)
                 train_loss_pred += loss_pred.item()
 
@@ -308,6 +315,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
         assert timestamps.shape[1] == 2
 
         x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_start_noisy, x_end_noisy = add_random_noise(x_start), add_random_noise(x_end)
 
         delta_t_normalized = torch.diff(t_list) / max_t
         step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized), (x_end.shape[0],))
@@ -315,7 +323,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
         x_interp_pseudo_gt = compute_diffusion_label(model.diffusion, step, x_end, xt)
         diffusion_time = model.step_to_t[step]
 
-        x_interp_pred = model(x=x_start, t=diffusion_time)
+        x_interp_pred = model(x=x_start_noisy, t=diffusion_time)
         loss_diffusion = mse_loss(x_interp_pseudo_gt, x_interp_pred)
 
         # Simulate `config.batch_size` by batched optimizer update.
@@ -333,12 +341,12 @@ def train_epoch_I2SB(config: AttributeHashmap,
         # There are only for plotting purposes.
         model.eval()
         # Almost reconstruction (step = [0, 1]).
-        _, x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
-        _, x_end_recon = model.ddpm_sampling(x_start=x_end, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        _, x_start_recon = model.ddpm_sampling(x_start=x_start_noisy, steps=np.int16(np.linspace(0, 1, 2)).tolist())
+        _, x_end_recon = model.ddpm_sampling(x_start=x_end_noisy, steps=np.int16(np.linspace(0, 1, 2)).tolist())
 
         assert torch.diff(t_list).item() > 0
         step_max = int(config.diffusion_interval * delta_t_normalized)
-        _, x_end_pred = model.ddpm_sampling(x_start=x_start,
+        _, x_end_pred = model.ddpm_sampling(x_start=x_start_noisy,
                                             steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
         x_start_recon = x_start_recon[:, -1, ...]
@@ -590,8 +598,8 @@ def test(config: AttributeHashmap):
     segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
     segmentor.eval()
 
-    for best_type in ['pred psnr', 'seg dice']:
-        if best_type == 'pred psnr':
+    for best_type in ['pred_psnr', 'seg_dice']:
+        if best_type == 'pred_psnr':
 
             model.load_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'), device=device)
             log('%s: Model weights successfully loaded.' % config.model,
@@ -600,7 +608,7 @@ def test(config: AttributeHashmap):
             save_path_fig_summary = '%s/results_best_pred_psnr/summary.png' % config.save_folder
             os.makedirs(os.path.dirname(save_path_fig_summary), exist_ok=True)
 
-        elif best_type == 'seg dice':
+        elif best_type == 'seg_dice':
 
             model.load_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'), device=device)
             log('%s: Model weights successfully loaded.' % config.model,
@@ -612,8 +620,9 @@ def test(config: AttributeHashmap):
         mse_loss = torch.nn.MSELoss()
 
         deltaT_list, psnr_list, ssim_list = [], [], []
-        test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim = 0, 0, 0, 0, 0
-        test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse = 0, 0, 0, 0
+        test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim = 0, 0, 0, [], []
+        test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse = [], [], [], []
+        test_seg_dice_gt = []
         for iter_idx, (images, timestamps) in enumerate(tqdm(test_set)):
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
@@ -662,13 +671,14 @@ def test(config: AttributeHashmap):
 
             test_recon_psnr += psnr(x0_true, x0_recon) / 2 + psnr(xT_true, xT_recon) / 2
             test_recon_ssim += ssim(x0_true, x0_recon) / 2 + ssim(xT_true, xT_recon) / 2
-            test_pred_psnr += psnr(xT_true, xT_pred)
-            test_pred_ssim += ssim(xT_true, xT_pred)
+            test_pred_psnr.append(psnr(xT_true, xT_pred))
+            test_pred_ssim.append(ssim(xT_true, xT_pred))
 
-            test_seg_dice += dice_coeff(xT_pred_seg, xT_seg)
-            test_seg_hd += hausdorff(xT_pred_seg, xT_seg)
-            test_residual_mae += np.mean(np.abs(xT_pred - xT_true))
-            test_residual_mse += np.mean((xT_pred - xT_true)**2)
+            test_seg_dice.append(dice_coeff(xT_pred_seg, xT_seg))
+            test_seg_hd.append(hausdorff(xT_pred_seg, xT_seg))
+            test_residual_mae.append(np.mean(np.abs(xT_pred - xT_true)))
+            test_residual_mse.append(np.mean((xT_pred - xT_true)**2))
+            test_seg_dice_gt.append(dice_coeff(x0_seg, xT_seg))
 
             # Plot an overall scattering plot.
             deltaT_list.append(0)
@@ -707,20 +717,26 @@ def test(config: AttributeHashmap):
         test_loss = test_loss / len(test_set.dataset)
         test_recon_psnr = test_recon_psnr / len(test_set.dataset)
         test_recon_ssim = test_recon_ssim / len(test_set.dataset)
-        test_pred_psnr = test_pred_psnr / len(test_set.dataset)
-        test_pred_ssim = test_pred_ssim / len(test_set.dataset)
-
-        test_seg_dice = test_seg_dice / len(test_set.dataset)
-        test_seg_hd = test_seg_hd / len(test_set.dataset)
-        test_residual_mae = test_residual_mae / len(test_set.dataset)
-        test_residual_mse = test_residual_mse / len(test_set.dataset)
 
         log('[Best %s] Test loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (best_type, test_loss, test_recon_psnr, test_recon_ssim, test_pred_psnr, test_pred_ssim) + \
+            % (best_type, test_loss, test_recon_psnr, test_recon_ssim, np.mean(test_pred_psnr), np.mean(test_pred_ssim)) + \
             ' DSC (pred): %.3f, HD (pred): %.3f, MAE (pred): %.3f, MSE (pred): %.3f'
-            % (test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse),
+            % (np.mean(test_seg_dice), np.mean(test_seg_hd), np.mean(test_residual_mae), np.mean(test_residual_mse)),
             filepath=config.log_dir,
             to_console=True)
+
+        # Save to csv.
+        results_df = pd.DataFrame({
+            'DICE(xT_true_seg, x0_true_seg)': test_seg_dice_gt,
+            'PSNR(xT_true, xT_pred)': test_pred_psnr,
+            'SSIM(xT_true, xT_pred)': test_pred_ssim,
+            'DICE(xT_true_seg, xT_pred_seg)': test_seg_dice,
+            'HD(xT_true_seg, xT_pred_seg)': test_seg_hd,
+            'MAE(xT_true, xT_pred)': test_residual_mae,
+            'MSE(xT_true, xT_pred)': test_residual_mse,
+        })
+        results_df.to_csv(config.log_dir.replace('.txt', best_type + '.csv'))
+
     return
 
 

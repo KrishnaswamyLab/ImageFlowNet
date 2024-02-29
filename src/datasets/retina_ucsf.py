@@ -20,8 +20,8 @@ def normalize_image(image: np.array) -> np.array:
     '''
     voxel_ndarray = image.copy()
     voxel_ndarray = voxel_ndarray.flatten()
-    upper_bound = np.percentile(voxel_ndarray, 99.95)
-    lower_bound = np.percentile(voxel_ndarray, 00.05)
+    upper_bound = np.percentile(voxel_ndarray, 99.5)
+    lower_bound = np.percentile(voxel_ndarray, 00.5)
     image = np.clip(image, lower_bound, upper_bound)
     image = (image - image.mean()) / (max(2 * image.std(), 1e-8))
     image = np.clip(image, -1.0, 1.0)
