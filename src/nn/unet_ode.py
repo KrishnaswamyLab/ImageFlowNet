@@ -10,7 +10,6 @@ sys.path.insert(0, import_dir + '/external_src/I2SB/')
 from guided_diffusion.script_util import create_model
 from guided_diffusion.unet import timestep_embedding
 
-def count_parameters(model): return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 class ODEUNet(BaseNetwork):
 
@@ -33,11 +32,13 @@ class ODEUNet(BaseNetwork):
         self.device = device
         image_size = 256  # TODO: currently hard coded
 
+        # NOTE: This model is smaller than the other counterparts,
+        # because running NeuralODE require some significant GPU space.
         # initialize model
         self.unet = create_model(
             image_size=image_size,
             in_channels=in_channels,
-            num_channels=256,
+            num_channels=128,
             num_res_blocks=1,
             channel_mult='',
             learn_sigma=False,
