@@ -11,9 +11,6 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_coun
     for key in ['learning_rate', 'ode_tol']:
         if key in config.keys():
             config[key] = float(config[key])
-    for key in ['target_dim']:
-        if key in config.keys():
-            config[key] = ast.literal_eval(config[key])
 
     # fix path issues
     ROOT = '/'.join(
@@ -21,6 +18,14 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_coun
     for key in config.keys():
         if type(config[key]) == str and '$ROOT' in config[key]:
             config[key] = config[key].replace('$ROOT', ROOT)
+
+    config.output_save_path = '%s/%s_%s_smoothness-%.3f_latent-%.3f_seed_%s/' % (
+        config.output_save_folder,
+        config.dataset_name,
+        config.model,
+        config.coeff_smoothness,
+        config.coeff_latent,
+        config.random_seed)
 
     # Initialize save folder.
     if run_count is None:

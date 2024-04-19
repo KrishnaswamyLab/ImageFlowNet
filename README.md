@@ -10,10 +10,62 @@ We want to predict the progression of diseases by interpolating or extrapolating
 ```
 ```
 
-## Under `external_src/SAM/`
-wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
-
 ## Data Provided
+Retinal dataset from UCSF.
+
+## Setup
+1. Create the environment following instructions in **Dependencies**.
+2. Download a pre-trained segmentation model (for data preprocessing purposes).
+```
+cd `external_src/SAM/`
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+```
+
+3. Data preprocessing
+```
+cd src/preprocessing
+python 01_preprocess_retina_UCSF.py
+python 02_register_retina_UCSF.py
+python 03_crop_retina_UCSF.py
+```
+
+## Reproduce the results
+
+### Image registration
+```
+cd src/preprocessing
+python test_registration.py
+```
+
+### Training a segmentation network (only for quantitative evaluation purposes)
+```
+cd src/
+python train_segmentor.py --mode train --config ../config/segment_retinaUCSF_seed1.yaml
+```
+
+### Training the main network (matching between 2 timepoints).
+```
+cd src/
+# Time-conditional UNet (baseline)
+python train_2pt_all.py --mode train --config ../config/retinaUCSF_T-UNet_seed1.yaml
+
+# Schrodinger Bridge
+python train_2pt_all.py --mode train --config ../config/retinaUCSF_I2SB_seed1.yaml
+
+# ODE-UNet
+python train_2pt_all.py --mode train --config ../config/retinaUCSF_ODEUNet_seed1.yaml
+```
+
+### Training the main network (matching between multiple timepoints).
+```
+cd src/
+# Schrodinger Bridge
+?
+
+# CDE-UNet
+python train_npt_cde.py --mode train --config ../config/retinaUCSF_CDEUNet_seed1.yaml
+```
+
 
 ## Dependencies
 We developed the codebase in a miniconda environment.
@@ -35,71 +87,10 @@ python -m pip install git+https://github.com/facebookresearch/segment-anything.g
 python -m pip install monai
 python -m pip install torchdiffeq
 python -m pip install torch-ema
-<!-- conda install -c conda-forge gcc=12.1.0  # If you see version `GLIBCXX_3.4.30' not found. -->
-```
-
-## Usage
-1. Experiments on synthetic data.
-First, we have a strong intuition that:
-    - ODE-AE will work if disease progression is the only variable in the image, while in non-disease regions we have pixel-perfect spatial alignment.
-    - ODE-AE will work if, even though we don't have pixel-perfect alignment in non-disease regions, the spatial transformation is well-defined and only depend on time.
-    - ODE-AE will NOT work if, the spatial transformation is random and chaotic.
-
-To verify this, we train ODE-AE on 3 synthetic datasets.
-```
-1. `./data/synthesized/base/`: non-disease regions are not moving.
-2. `./data/synthesized/rotation/`: non-disease regions are rotated, and the rotation only depends on time.
-3. `./data/synthesized/mixing/`: non-disease regions are transformed, and the transformation is chaotic.
-```
-
-<!-- I2SB pre-trained network
-```
-cd external_src/I2SB/
-mkdir pretrained_weights && cd pretrained_weights
-wget https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt
-``` -->
-
-<!-- ```
-conda create --name mip python==3.8
-conda activate mip
-conda install -c conda-forge torchdiffeq
-conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
-conda install scikit-image pillow matplotlib seaborn tqdm -c anaconda
-python -m pip install opencv-python
-python -m pip install -U roifile[all]
-python -m pip install click
-python -m pip install psutil
-python -m pip install tensorboard
-python -m pip install pytorch-ssim
-
-# StyleGAN2
-conda install pytorch-gpu==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 cudatoolkit=11.1 -c pytorch -c conda-forge
-python3 -m pip install setuptools==59.5.0
-python3 -m pip install ninja
-
-
-# 1. Use requirements
-conda env create --file requirements.yaml
-# 2. Additional installation
-conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
-python -m pip install opencv-python
-```
-
-## DEBUG:
-1. OSError: xxxx/libcublas.so.11: undefined symbol: cublasLtBIIMatmulAlgoGetHeuristic, version libcublasLt.so.11
-```
-# In this case, you may need to add the correct location of `libcublasLt.so.11` into the environment variable `$LD_LIBRARY_PATH`.
-# For me, this means:
-export LD_LIBRARY_PATH=/PATH_TO_MY_CONDA_ENV/.conda_envs/mip-i2sb/lib:$LD_LIBRARY_PATH
-``` -->
-
-<!-- pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113 -->
-
-<!-- ## Usage
-```
-python train.py --cond-x1 --log-writer wandb --wandb-api-key a8e550aa2ec6835c2890425e63b466a8b46c01ab --wandb-user cl2482
+python -m pip install torchcde
 ```
 
 
 ## Acknowledgements
-Codebase heavily adapted from [I^2SB: Image-to-Image Schrodinger Bridge](https://github.com/NVlabs/I2SB) -->
+We adapted some of the code from
+1. [I^2SB: Image-to-Image Schrodinger Bridge](https://github.com/NVlabs/I2SB)

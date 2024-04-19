@@ -1,6 +1,7 @@
 import math
 import torch
 from torchdiffeq import odeint
+import torchcde
 
 
 class ODEfunc(torch.nn.Module):
@@ -24,6 +25,27 @@ class ODEfunc(torch.nn.Module):
         out = self.relu(out)
         return out
 
+class StaticODEfunc(torch.nn.Module):
+
+    def __init__(self, dim):
+        super().__init__()
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.norm1 = torch.nn.InstanceNorm2d(dim)
+        self.conv1 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
+        self.norm2 = torch.nn.InstanceNorm2d(dim)
+        self.conv2 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
+        self.nfe = 0
+
+    def forward(self, t, x):
+        # `t` is a dummy variable here.
+        self.nfe += 1
+        out = self.norm1(x)
+        out = self.conv1(out)
+        out = self.relu(out)
+        out = self.norm2(out)
+        out = self.conv2(out)
+        out = self.relu(out)
+        return out
 
 class ODEBlock(torch.nn.Module):
 
@@ -41,6 +63,12 @@ class ODEBlock(torch.nn.Module):
                      atol=self.tolerance)
         return out[1]
 
+    def vec_grad(self, x):
+        # return self.odefunc(0, x).abs().mean()
+        w1 = self.odefunc.conv1.weight
+        w2 = self.odefunc.conv2.weight
+        return (w1**2).sum() + (w2**2).sum()
+
     @property
     def nfe(self):
         return self.odefunc.nfe
@@ -48,6 +76,46 @@ class ODEBlock(torch.nn.Module):
     @nfe.setter
     def nfe(self, value):
         self.odefunc.nfe = value
+
+
+class CDEBlock(torch.nn.Module):
+
+    def __init__(self, cdefunc, interpolation: str = "linear"):
+        super().__init__()
+        self.cdefunc = cdefunc
+        self.interpolation = interpolation
+
+    def forward(self, x, integration_time):
+        x_and_t = torch.cat([integration_time[:-1].unsqueeze(0).unsqueeze(2),
+                             x.reshape(x.shape[0], -1).unsqueeze(0)],
+                            dim=2)
+        if self.interpolation == 'cubic':
+            coeffs = torchcde.hermite_cubic_coefficients_with_backward_differences(x_and_t)
+            X = torchcde.CubicSpline(coeffs)
+        elif self.interpolation == 'linear':
+            coeffs = torchcde.linear_interpolation_coeffs(x_and_t)
+            X = torchcde.LinearInterpolation(coeffs)
+        else:
+            raise ValueError("Only 'linear' and 'cubic' interpolation methods are implemented.")
+
+        X0 = X.evaluate(X.interval[0]) #[:, 1:].reshape(1, 128, 256, 256)
+
+        integration_time = integration_time.type_as(x)
+        import pdb
+        pdb.set_trace()
+        out = torchcde.cdeint(X=X, z0=X0, func=self.cdefunc, t=integration_time)
+        import pdb
+        pdb.set_trace()
+        return out[1]
+
+    @property
+    def nfe(self):
+        return self.cdefunc.nfe
+
+    @nfe.setter
+    def nfe(self, value):
+        self.cdefunc.nfe = value
+
 
 class ConvBlock(torch.nn.Module):
 

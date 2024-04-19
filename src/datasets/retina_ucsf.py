@@ -40,11 +40,13 @@ def load_image(path: str, target_dim: Tuple[int] = None, normalize: bool = True)
     if normalize:
         image = normalize_image(image)
 
-    # Add the channel dimension to comply with Torch.
-    image = image[None, :, :]
-
     return image
 
+def add_channel_dim(array: np.array) -> np.array:
+    assert len(array.shape) == 2
+    # Add the channel dimension to comply with Torch.
+    array = array[None, :, :]
+    return array
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
@@ -100,7 +102,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
     def __init__(self,
                  main_dataset: RetinaUCSFDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs'],
+                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences'],
                  transforms = None,
                 #  min_time_diff: int = 6,
                  pos_neg_pairs: bool = False):
@@ -116,8 +118,6 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
 
-        min_time_diff is only used if `return_format` is `one_pair`.
-
         pos_neg_pairs is a dummy input argument for backward compatibility.
         '''
         super().__init__()
@@ -132,12 +132,17 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         ]
 
         self.all_image_pairs = []
+        self.all_subsequences = []
         for image_list in self.image_by_patient:
-            pair_indices = list(
-                itertools.combinations(np.arange(len(image_list)), r=2))
+            pair_indices = list(itertools.combinations(np.arange(len(image_list)), r=2))
             for (idx1, idx2) in pair_indices:
                 self.all_image_pairs.append(
                     [image_list[idx1], image_list[idx2]])
+
+            for num_items in range(2, len(image_list)+1):
+                subsequence_indices_list = list(itertools.combinations(np.arange(len(image_list)), r=num_items))
+                for subsequence_indices in subsequence_indices_list:
+                    self.all_subsequences.append([image_list[idx] for idx in subsequence_indices])
 
     def __len__(self) -> int:
         if self.return_format == 'one_pair':
@@ -146,6 +151,9 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         elif self.return_format == 'all_pairs':
             # If we return all pairs of images per patient...
             return len(self.all_image_pairs)
+        elif self.return_format == 'all_subsequences':
+            # If we return all subsequences of images per patient...
+            return len(self.all_subsequences)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
         if self.return_format == 'one_pair':
@@ -177,27 +185,59 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
                 for i in pair_indices[np.random.choice(len(pair_indices))]
             ]
             images = np.array([
-                load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in sampled_pair
             ])
-            timestamps = np.array([get_time(p) for p in sampled_pair])
+            timestamps = np.array([get_time(img) for img in sampled_pair])
 
         elif self.return_format == 'all_pairs':
             queried_pair = self.all_image_pairs[idx]
             images = np.array([
-                load_image(p, target_dim=self.target_dim, normalize=False) for p in queried_pair
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_pair
             ])
-            timestamps = np.array([get_time(p) for p in queried_pair])
+            timestamps = np.array([get_time(img) for img in queried_pair])
 
-        assert len(images) == 2
-        image1, image2 = images[0], images[1]
-        if self.transforms is not None:
-            transformed = self.transforms(image=image1, image_other=image2)
-            image1 = transformed["image"]
-            image2 = transformed["image_other"]
+        elif self.return_format == 'all_subsequences':
+            queried_sequence = self.all_subsequences[idx]
+            images = np.array([
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
+            ])
+            timestamps = np.array([get_time(img) for img in queried_sequence])
 
-        image1 = normalize_image(image1)
-        image2 = normalize_image(image2)
-        images = np.vstack((image1[None, ...], image2[None, ...]))
+        if self.return_format in ['one_pair', 'all_pairs']:
+            assert len(images) == 2
+            image1, image2 = images[0], images[1]
+            if self.transforms is not None:
+                transformed = self.transforms(image=image1, image_other=image2)
+                image1 = transformed["image"]
+                image2 = transformed["image_other"]
+
+            image1 = normalize_image(image1)
+            image2 = normalize_image(image2)
+
+            image1 = add_channel_dim(image1)
+            image2 = add_channel_dim(image2)
+
+            images = np.vstack((image1[None, ...], image2[None, ...]))
+
+        elif self.return_format == 'all_subsequences':
+            num_images = len(images)
+            assert num_images >= 2
+            assert num_images < 10  # NOTE: see `additional_targets` in `transform`.
+
+            # Unpack the subsequence.
+            image_list = np.rollaxis(images, axis=0)
+
+            data_dict = {'image': image_list[0]}
+            for idx in range(num_images - 1):
+                data_dict['image_other%d' % (idx + 1)] = image_list[idx + 1]
+
+            if self.transforms is not None:
+                data_dict = self.transforms(**data_dict)
+
+            images = normalize_image(add_channel_dim(data_dict['image']))[None, ...]
+            for idx in range(num_images - 1):
+                images = np.vstack((images,
+                                    normalize_image(add_channel_dim(data_dict['image_other%d' % (idx + 1)]))[None, ...]))
 
         return images, timestamps
 
@@ -278,5 +318,8 @@ class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
 
         image = image / 255 * 2 - 1
         mask = mask > 128
+
+        image = add_channel_dim(image)
+        mask = add_channel_dim(mask)
 
         return image, mask
