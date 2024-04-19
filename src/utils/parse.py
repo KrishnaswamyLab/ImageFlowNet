@@ -19,7 +19,7 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_coun
         if type(config[key]) == str and '$ROOT' in config[key]:
             config[key] = config[key].replace('$ROOT', ROOT)
 
-    config.output_save_path = '%s/%s_%s_smoothness-%.3f_latent-%.3f_seed_%s/' % (
+    config.output_save_path = '%s/%s_%s_smoothness-%.3f_latent-%.3f_seed_%s' % (
         config.output_save_folder,
         config.dataset_name,
         config.model,

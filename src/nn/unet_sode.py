@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import torch
 from .base import BaseNetwork
-from .nn_utils import StaticODEfunc, ODEBlock
+from .nn_utils import StaticODEfunc, Combine2Channels, LatentClassifier, SODEBlock
 
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
 sys.path.insert(0, import_dir + '/external_src/I2SB/')
@@ -11,15 +11,14 @@ from guided_diffusion.script_util import create_model
 from guided_diffusion.unet import timestep_embedding
 
 
-class StaticODEUNet(BaseNetwork):
+class SODEUNet(BaseNetwork):
 
     def __init__(self,
                  device: torch.device,
                  in_channels: int,
                  **kwargs):
         '''
-        A UNet model with ODE.
-        NOTE: This is a UNet with a static ODE vector field.
+        A UNet model with State-augmented Ordinary Differential Equation (SODE).
 
         Parameters
         ----------
@@ -68,19 +67,22 @@ class StaticODEUNet(BaseNetwork):
         if h_dummy.shape[1] not in self.dim_list:
             self.dim_list.append(h_dummy.shape[1])
 
-        # Construct the ODE modules.
-        self.ode_list = torch.nn.ModuleList([])
+        # Construct the SODE modules.
+        self.sode_list = torch.nn.ModuleList([])
         for dim in self.dim_list:
-            self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
+            # NOTE: not a typo. ODEfunc inside CDEBlock.
+            self.sode_list.append(SODEBlock(StaticODEfunc(dim=dim),
+                                            Combine2Channels(dim=dim),
+                                            LatentClassifier(dim=dim, emb_channels=emb.shape[1])))
 
         self.unet.to(self.device)
-        self.ode_list.to(self.device)
+        self.sode_list.to(self.device)
 
     def time_independent_parameters(self):
         '''
-        Parameters related to ODE.
+        Parameters related to CDE.
         '''
-        return set(self.parameters()) - set(self.ode_list.parameters())
+        return set(self.parameters()) - set(self.sode_list.parameters())
 
     def freeze_time_independent(self):
         '''
@@ -99,17 +101,15 @@ class StaticODEUNet(BaseNetwork):
         """
 
         # Skip ODE if no time difference.
-        use_ode = t.item() != 0
+        use_ode = not (len(t) == 1 and t.item() == 0)
         if use_ode:
-            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
+            integration_time = t.float()
 
         h_skip_connection = []
         if return_grad:
             vec_field_gradients = 0
 
-        # Provide a dummy time embedding, since we are learning a static ODE vector field.
-        dummy_t = torch.zeros_like(t).to(t.device)
-        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+        emb = self.unet.time_embed(timestep_embedding(t, self.unet.model_channels))
 
         h = x.type(self.unet.dtype)
         for module in self.unet.input_blocks:
@@ -118,17 +118,15 @@ class StaticODEUNet(BaseNetwork):
                 ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
                 if return_grad:
                     vec_field_gradients += self.ode_list[ode_idx].vec_grad()
-                h_skip = self.ode_list[ode_idx](h, integration_time)
-                h_skip_connection.append(h_skip)
-            else:
-                h_skip_connection.append(h)
+                h = self.sode_list[ode_idx](h, emb, integration_time)
+            h_skip_connection.append(h)
 
         h = self.unet.middle_block(h, emb)
         if use_ode:
             ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
             if return_grad:
                 vec_field_gradients += self.ode_list[ode_idx].vec_grad()
-            h = self.ode_list[ode_idx](h, integration_time)
+            h = self.sode_list[ode_idx](h, emb, integration_time)
 
         for module in self.unet.output_blocks:
             h = torch.cat([h, h_skip_connection.pop()], dim=1)
@@ -139,3 +137,4 @@ class StaticODEUNet(BaseNetwork):
             return self.unet.out(h), vec_field_gradients.mean() / (len(self.unet.input_blocks) + 1)
         else:
             return self.unet.out(h)
+

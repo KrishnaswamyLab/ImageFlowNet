@@ -63,8 +63,125 @@ class ODEBlock(torch.nn.Module):
                      atol=self.tolerance)
         return out[1]
 
-    def vec_grad(self, x):
+    def vec_grad(self):
+        '''
+        NOTE: Assuming self.odefunc only has weights in conv1 and conv2.
+        '''
         # return self.odefunc(0, x).abs().mean()
+        w1 = self.odefunc.conv1.weight
+        w2 = self.odefunc.conv2.weight
+        return (w1**2).sum() + (w2**2).sum()
+
+    @property
+    def nfe(self):
+        return self.odefunc.nfe
+
+    @nfe.setter
+    def nfe(self, value):
+        self.odefunc.nfe = value
+
+
+class LatentClassifier(torch.nn.Module):
+    '''
+    A simple classifier model that produces
+    a scalar (-inf, inf) from a tensor.
+    '''
+
+    def __init__(self, dim, emb_channels, image_size=256):
+        super().__init__()
+        self.emb_layer = torch.nn.Sequential(
+            torch.nn.SiLU(),
+            torch.nn.Linear(emb_channels, dim),
+        )
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.norm1 = torch.nn.InstanceNorm2d(dim)
+        self.conv1 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
+        self.norm2 = torch.nn.InstanceNorm2d(dim)
+        self.conv2 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
+        self.avg_pool = torch.nn.AvgPool2d(image_size)
+        self.linear = torch.nn.Linear(dim, 1)
+
+    def forward(self, z, emb):
+        out = self.norm1(z)
+        out = self.conv1(out)
+        out = self.relu(out)
+
+        emb_out = self.emb_layer(emb).type(out.dtype)
+        while len(emb_out.shape) < len(out.shape):
+            emb_out = emb_out[..., None]
+        out = out + emb_out
+
+        out = self.norm2(out)
+        out = self.conv2(out)
+        out = self.relu(out)
+
+        out = self.avg_pool(out)
+        out = out.view(out.shape[0], -1)
+        out = self.linear(out)
+        return out
+
+class Combine2Channels(torch.nn.Module):
+
+    def __init__(self, dim):
+        super().__init__()
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.norm1 = torch.nn.InstanceNorm2d(dim * 2)
+        self.conv1 = torch.nn.Conv2d(dim * 2, dim, 3, 1, 1)
+
+    def forward(self, z_concat):
+        out = self.norm1(z_concat)
+        out = self.conv1(out)
+        out = self.relu(out)
+        return out
+
+class SODEBlock(torch.nn.Module):
+    '''
+    State-augmented ODE block.
+    z_tj = z_ti + \int_ti^tj f_theta(z_tau, z_s) d tau
+    z_s = \sum_k gamma_k z_tk, tk < tau
+    gamma_k = softmax(g(z_tk)), tk < tau
+    '''
+
+    def __init__(self,
+                 odefunc,
+                 combine_2channels,
+                 latent_cls,
+                 tolerance: float = 1e-3):
+        super().__init__()
+        self.odefunc = odefunc
+        self.combine_2channels = combine_2channels
+        self.latent_cls = latent_cls
+        self.tolerance = tolerance
+
+    def forward(self, z_arr, emb, integration_time):
+        integration_time = integration_time.type_as(z_arr)
+
+        num_obs = z_arr.shape[0]
+        if num_obs == 1:
+            z_cat = torch.cat([z_arr[0].unsqueeze(0),
+                               z_arr[0].unsqueeze(0)], dim=1)
+        else:
+            cls_outputs = self.latent_cls(z=z_arr, emb=emb)
+            coeffs = torch.nn.functional.softmax(cls_outputs, dim=1)
+            assert len(coeffs.shape) == 2 and coeffs.shape[1] == 1
+            coeffs = coeffs.unsqueeze(-1).unsqueeze(-1)
+            zs = coeffs * z_arr
+            z_cat = torch.cat([z_arr[0].unsqueeze(0),
+                               zs], dim=1)
+
+        z = self.combine_2channels(z_cat)
+        out = odeint(self.odefunc,
+                     z,
+                     integration_time,
+                     rtol=self.tolerance,
+                     atol=self.tolerance)
+
+        return out[1]
+
+    def vec_grad(self):
+        '''
+        NOTE: Assuming self.odefunc only has weights in conv1 and conv2.
+        '''
         w1 = self.odefunc.conv1.weight
         w2 = self.odefunc.conv2.weight
         return (w1**2).sum() + (w2**2).sum()
