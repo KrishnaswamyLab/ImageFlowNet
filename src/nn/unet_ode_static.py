@@ -16,6 +16,7 @@ class StaticODEUNet(BaseNetwork):
     def __init__(self,
                  device: torch.device,
                  in_channels: int,
+                 ode_location: str = 'all_connections',
                  **kwargs):
         '''
         A UNet model with ODE.
@@ -26,11 +27,18 @@ class StaticODEUNet(BaseNetwork):
         device: torch.device
         in_channels: int
             Number of input image channels.
+
+        ode_location: str
+            If 'bottleneck', only perform ODE on the bottleneck layer.
+            If 'all_resolutions', skip connections with the same resolution share the same ODE.
+            If 'all_connections', perform ODE separately in all skip connections.
         All other kwargs will be ignored.
         '''
         super().__init__()
 
         self.device = device
+        self.ode_location = ode_location
+        assert self.ode_location in ['bottleneck', 'all_resolutions', 'all_connections']
         image_size = 256  # TODO: currently hard coded
 
         # NOTE: This model is smaller than the other counterparts,
@@ -62,16 +70,20 @@ class StaticODEUNet(BaseNetwork):
         emb = self.unet.time_embed(timestep_embedding(t_dummy, self.unet.model_channels))
         for module in self.unet.input_blocks:
             h_dummy = module(h_dummy, emb)
-            if h_dummy.shape[1] not in self.dim_list:
-                self.dim_list.append(h_dummy.shape[1])
-        h_dummy = self.unet.middle_block(h_dummy, emb)
-        if h_dummy.shape[1] not in self.dim_list:
             self.dim_list.append(h_dummy.shape[1])
+        h_dummy_bottleneck = self.unet.middle_block(h_dummy, emb)
+        self.dim_list.append(h_dummy_bottleneck.shape[1])
 
         # Construct the ODE modules.
         self.ode_list = torch.nn.ModuleList([])
-        for dim in self.dim_list:
-            self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
+        if self.ode_location == 'bottleneck':
+            self.ode_list.append(ODEBlock(StaticODEfunc(dim=h_dummy_bottleneck.shape[1])))
+        elif self.ode_location == 'all_resolutions':
+            for dim in np.unique(self.dim_list):
+                self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
+        elif self.ode_location == 'all_connections':
+            for dim in self.dim_list:
+                self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
 
         self.unet.to(self.device)
         self.ode_list.to(self.device)
@@ -103,36 +115,49 @@ class StaticODEUNet(BaseNetwork):
         if use_ode:
             integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
-        h_skip_connection = []
-
         # Provide a dummy time embedding, since we are learning a static ODE vector field.
         dummy_t = torch.zeros_like(t).to(t.device)
         emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
 
         h = x.type(self.unet.dtype)
+
+        # Contraction path.
+        h_skip_connection = []
         for module in self.unet.input_blocks:
             h = module(h, emb)
-            if use_ode:
-                ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-                h_skip = self.ode_list[ode_idx](h, integration_time)
-                h_skip_connection.append(h_skip)
-            else:
-                h_skip_connection.append(h)
+            h_skip_connection.append(h)
 
+        # Bottleneck
         h = self.unet.middle_block(h, emb)
-        if use_ode:
-            ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-            h = self.ode_list[ode_idx](h, integration_time)
 
-        for module in self.unet.output_blocks:
-            h = torch.cat([h, h_skip_connection.pop(-1)], dim=1)
+        # ODE on bottleneck
+        if use_ode:
+            h = self.ode_list[-1](h, integration_time)
+
+        # Expansion path.
+        for module_idx, module in enumerate(self.unet.output_blocks):
+            h_skip = h_skip_connection.pop(-1)
+
+            # ODE over skip connections.
+            if use_ode and self.ode_location in ['all_resolutions', 'all_connections']:
+                if self.ode_location == 'all_connections':
+                    curr_ode_block = self.ode_list[::-1][module_idx + 1]
+                else:
+                    resolution_idx = np.argwhere(np.unique(self.dim_list) == h_skip.shape[1]).item()
+                    curr_ode_block = self.ode_list[resolution_idx]
+                h_skip = curr_ode_block(h_skip, integration_time)
+
+            h = torch.cat([h, h_skip], dim=1)
             h = module(h, emb)
+
+        # Output.
         h = h.type(x.dtype)
+        output = self.unet.out(h)
 
         if return_grad:
             vec_field_gradients = 0
             for i in range(len(self.ode_list)):
                 vec_field_gradients += self.ode_list[i].vec_grad()
-            return self.unet.out(h), vec_field_gradients.mean() / len(self.ode_list)
+            return output, vec_field_gradients.mean() / len(self.ode_list)
         else:
-            return self.unet.out(h)
+            return output

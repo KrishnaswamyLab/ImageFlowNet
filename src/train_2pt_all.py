@@ -36,6 +36,7 @@ from nn.unet_t_emb import T_UNet
 from nn.unet_i2sb import I2SBUNet
 from nn.off_the_shelf_encoder import VisionEncoder
 
+
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-2])
 sys.path.insert(0, import_dir + '/external_src/I2SB/')
 from i2sb.diffusion import Diffusion
@@ -80,6 +81,7 @@ def train(config: AttributeHashmap):
         model = globals()[config.model](device=device,
                                         num_filters=config.num_filters,
                                         depth=config.depth,
+                                        ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
                                         **kwargs)
@@ -589,6 +591,7 @@ def test(config: AttributeHashmap):
         model = globals()[config.model](device=device,
                                         num_filters=config.num_filters,
                                         depth=config.depth,
+                                        ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
                                         **kwargs)
@@ -911,9 +914,10 @@ if __name__ == '__main__':
     parser.add_argument('--learning-rate', default=1e-4, type=float)
     parser.add_argument('--max-epochs', default=120, type=int)
     parser.add_argument('--batch-size', default=64, type=int)
-    parser.add_argument('--t-multiplier', default=0.2, type=int)  # only relevant to ODE
-    parser.add_argument('--depth', default=5, type=int)           # only relevant to simple unet
-    parser.add_argument('--num-filters', default=64, type=int)    # only relevant to simple unet
+    parser.add_argument('--t-multiplier', default=0.2, type=float)  # only relevant to ODE
+    parser.add_argument('--ode-location', default='all_connections', type=str)  # only relevant to ODE
+    parser.add_argument('--depth', default=5, type=int)             # only relevant to simple unet
+    parser.add_argument('--num-filters', default=64, type=int)      # only relevant to simple unet
     parser.add_argument('--num-workers', default=8, type=int)
     parser.add_argument('--train-val-test-ratio', default='6:2:2', type=str)
     parser.add_argument('--max-training-samples', default=2048, type=int)
