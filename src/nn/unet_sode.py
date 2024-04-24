@@ -106,35 +106,43 @@ class SODEUNet(BaseNetwork):
             integration_time = t.float()
 
         h_skip_connection = []
-        if return_grad:
-            vec_field_gradients = 0
 
-        emb = self.unet.time_embed(timestep_embedding(t, self.unet.model_channels))
+        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        dummy_t = torch.zeros_like(t).to(t.device)
+        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+
+        # State-augmented ODE actually needs the proper time embedding.
+        emb_sode = self.unet.time_embed(timestep_embedding(t, self.unet.model_channels))
 
         h = x.type(self.unet.dtype)
         for module in self.unet.input_blocks:
             h = module(h, emb)
             if use_ode:
                 ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-                if return_grad:
-                    vec_field_gradients += self.ode_list[ode_idx].vec_grad()
-                h = self.sode_list[ode_idx](h, emb, integration_time)
-            h_skip_connection.append(h)
+                h_skip = self.sode_list[ode_idx](h, emb_sode, integration_time)
+                h_skip_connection.append(h_skip)
+            else:
+                h_skip_connection.append(h)
 
         h = self.unet.middle_block(h, emb)
         if use_ode:
             ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-            if return_grad:
-                vec_field_gradients += self.ode_list[ode_idx].vec_grad()
-            h = self.sode_list[ode_idx](h, emb, integration_time)
+            h = self.sode_list[ode_idx](h, emb_sode, integration_time)
 
         for module in self.unet.output_blocks:
-            h = torch.cat([h, h_skip_connection.pop()], dim=1)
+            # When modeling multiple observations, we only keep the first observation.
+            if h.shape[0] > 1:
+                h = h[0].unsqueeze(0)
+            h = torch.cat([h, h_skip_connection.pop(-1)], dim=1)
             h = module(h, emb)
+
         h = h.type(x.dtype)
 
         if return_grad:
-            return self.unet.out(h), vec_field_gradients.mean() / (len(self.unet.input_blocks) + 1)
+            vec_field_gradients = 0
+            for i in range(len(self.sode_list)):
+                vec_field_gradients += self.sode_list[i].vec_grad()
+            return self.unet.out(h), vec_field_gradients.mean() / len(self.sode_list)
         else:
             return self.unet.out(h)
 

@@ -16,7 +16,7 @@ from tqdm import tqdm
 import monai
 import albumentations as A
 
-from data_utils.prepare_dataset import prepare_dataset
+from data_utils.prepare_dataset import prepare_dataset_npt
 from nn.scheduler import LinearWarmupCosineAnnealingLR
 from utils.attribute_hashmap import AttributeHashmap
 from utils.log_util import log
@@ -61,7 +61,7 @@ def train(config: AttributeHashmap):
     )
     transforms_list = [train_transform, None, None]
     train_set, val_set, test_set, num_image_channel, max_t = \
-        prepare_dataset(config=config, transforms_list=transforms_list)
+        prepare_dataset_npt(config=config, transforms_list=transforms_list)
 
     log('Using device: %s' % device, to_console=True)
 
@@ -205,11 +205,10 @@ def train_epoch(config: AttributeHashmap,
 
             if config.coeff_smoothness > 0:
                 # Regularize on ODE trajectory smoothness via vector field Lipschitz continuity.
-                x_end_pred, smoothness_loss = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr - t_arr[0]) * config.t_multiplier, return_grad=True)
+                x_end_pred, smoothness_loss = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr[1:] - t_arr[0]) * config.t_multiplier, return_grad=True)
             else:
-                x_end_pred = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr - t_arr[0]) * config.t_multiplier)
+                x_end_pred = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr[1:] - t_arr[0]) * config.t_multiplier)
 
-        ## NOTE: HERE
             if config.coeff_latent > 0:
                 # Regularize on latent embedding of image.
                 latent_end_pred = vision_encoder.embed(x_end_pred)
@@ -226,7 +225,7 @@ def train_epoch(config: AttributeHashmap,
         else:
             # Will not train the time-dependent modules until the reconstruction is good enough.
             with torch.no_grad():
-                x_end_pred = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr - t_arr[0]) * config.t_multiplier)
+                x_end_pred = model(x=torch.vstack(x_noisy_list[:-1]), t=(t_arr[1:] - t_arr[0]) * config.t_multiplier)
                 loss_pred = mse_loss(x_end, x_end_pred)
                 train_loss_pred += loss_pred.item()
 
@@ -300,7 +299,7 @@ def val_epoch(config: AttributeHashmap,
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-        x_end_pred = model(x=torch.vstack(x_list[:-1]), t=(t_arr - t_arr[0]) * config.t_multiplier)
+        x_end_pred = model(x=torch.vstack(x_list[:-1]), t=(t_arr[1:] - t_arr[0]) * config.t_multiplier)
 
         x_start_seg = segmentor(x_start) > 0.5
         x_end_seg = segmentor(x_end) > 0.5
@@ -347,7 +346,7 @@ def test(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
     _train_set, _val_set, test_set, num_image_channel, max_t = \
-        prepare_dataset(config=config)
+        prepare_dataset_npt(config=config)
 
     # Build the model
     assert config.model == 'SODEUNet'
@@ -407,7 +406,7 @@ def test(config: AttributeHashmap):
 
             x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
             x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
-            x_end_pred = model(x=torch.vstack(x_list[:-1]), t=(t_arr - t_arr[0]) * config.t_multiplier)
+            x_end_pred = model(x=torch.vstack(x_list[:-1]), t=(t_arr[1:] - t_arr[0]) * config.t_multiplier)
 
             loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
             loss_pred = mse_loss(x_end, x_end_pred)

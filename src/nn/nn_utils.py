@@ -65,12 +65,13 @@ class ODEBlock(torch.nn.Module):
 
     def vec_grad(self):
         '''
-        NOTE: Assuming self.odefunc only has weights in conv1 and conv2.
+        NOTE: Only taking care of Conv2d weights.
         '''
-        # return self.odefunc(0, x).abs().mean()
-        w1 = self.odefunc.conv1.weight
-        w2 = self.odefunc.conv2.weight
-        return (w1**2).sum() + (w2**2).sum()
+        sum_weight_sq_norm = 0
+        for m in self.odefunc.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                sum_weight_sq_norm += (m.weight ** 2).sum()
+        return sum_weight_sq_norm
 
     @property
     def nfe(self):
@@ -87,7 +88,7 @@ class LatentClassifier(torch.nn.Module):
     a scalar (-inf, inf) from a tensor.
     '''
 
-    def __init__(self, dim, emb_channels, image_size=256):
+    def __init__(self, dim, emb_channels):
         super().__init__()
         self.emb_layer = torch.nn.Sequential(
             torch.nn.SiLU(),
@@ -98,7 +99,6 @@ class LatentClassifier(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
         self.norm2 = torch.nn.InstanceNorm2d(dim)
         self.conv2 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
-        self.avg_pool = torch.nn.AvgPool2d(image_size)
         self.linear = torch.nn.Linear(dim, 1)
 
     def forward(self, z, emb):
@@ -115,7 +115,7 @@ class LatentClassifier(torch.nn.Module):
         out = self.conv2(out)
         out = self.relu(out)
 
-        out = self.avg_pool(out)
+        out = out.mean([2, 3])  # global average pooling
         out = out.view(out.shape[0], -1)
         out = self.linear(out)
         return out
@@ -155,6 +155,11 @@ class SODEBlock(torch.nn.Module):
 
     def forward(self, z_arr, emb, integration_time):
         integration_time = integration_time.type_as(z_arr)
+        # We only integrate from the second-last to the last time.
+        if len(integration_time) == 1:
+            integration_time = torch.tensor([0, integration_time[0]]).float().to(z_arr.device)
+        else:
+            integration_time = torch.tensor([0, integration_time[-1] - integration_time[-2]]).float().to(z_arr.device)
 
         num_obs = z_arr.shape[0]
         if num_obs == 1:
@@ -162,10 +167,10 @@ class SODEBlock(torch.nn.Module):
                                z_arr[0].unsqueeze(0)], dim=1)
         else:
             cls_outputs = self.latent_cls(z=z_arr, emb=emb)
-            coeffs = torch.nn.functional.softmax(cls_outputs, dim=1)
+            coeffs = torch.nn.functional.softmax(cls_outputs, dim=0)
             assert len(coeffs.shape) == 2 and coeffs.shape[1] == 1
             coeffs = coeffs.unsqueeze(-1).unsqueeze(-1)
-            zs = coeffs * z_arr
+            zs = (coeffs * z_arr).sum(dim=0, keepdim=True)
             z_cat = torch.cat([z_arr[0].unsqueeze(0),
                                zs], dim=1)
 

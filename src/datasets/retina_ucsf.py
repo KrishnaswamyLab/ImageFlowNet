@@ -76,18 +76,37 @@ class RetinaUCSFDataset(Dataset):
         super().__init__()
 
         self.target_dim = target_dim
-        all_image_folders = sorted(glob('%s/%s/*/' %
+        self.all_image_folders = sorted(glob('%s/%s/*/' %
                                         (base_path, image_folder)))
 
         self.image_by_patient = []
 
         self.max_t = 0
-        for folder in all_image_folders:
+        for folder in self.all_image_folders:
             paths = sorted(glob('%s/*.png' % (folder)))
             if len(paths) >= 2:
                 self.image_by_patient.append(paths)
             for p in paths:
                 self.max_t = max(self.max_t, get_time(p))
+
+    def return_statistics(self) -> None:
+        # NOTE: "patient" in the context outside means "eye" here.
+        # The following printout is using a more precise terminology.
+        unique_eye_list = np.unique([os.path.basename(item.rstrip('/')) for item in self.all_image_folders])
+        unique_patient_list = np.unique([item.replace('_LE', '').replace('_RE', '') for item in unique_eye_list])
+        print('Number of unique patients:', len(unique_patient_list))
+        print('Number of unique eyes:', len(unique_eye_list))
+
+        num_visit_map = {}
+        for item in self.image_by_patient:
+            num_visit = len(item)
+            if num_visit not in num_visit_map.keys():
+                num_visit_map[num_visit] = 1
+            else:
+                num_visit_map[num_visit] += 1
+        for k, v in sorted(num_visit_map.items()):
+            print('%d visits: %d eyes.' % (k, v))
+        return
 
     def __len__(self) -> int:
         return len(self.image_by_patient)
@@ -323,3 +342,13 @@ class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
         mask = add_channel_dim(mask)
 
         return image, mask
+
+
+if __name__ == '__main__':
+    print('Before preprocessing...')
+    dataset = RetinaUCSFDataset(image_folder='UCSF_images_512x512')
+    dataset.return_statistics()
+
+    print('After preprocessing...')
+    dataset = RetinaUCSFDataset(image_folder='UCSF_images_final_512x512')
+    dataset.return_statistics()

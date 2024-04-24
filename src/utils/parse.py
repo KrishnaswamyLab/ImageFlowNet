@@ -19,13 +19,15 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_coun
         if type(config[key]) == str and '$ROOT' in config[key]:
             config[key] = config[key].replace('$ROOT', ROOT)
 
-    config.output_save_path = '%s/%s_%s_smoothness-%.3f_latent-%.3f_seed_%s' % (
-        config.output_save_folder,
+    setting_str = '%s_%s_smoothness-%.3f_latent-%.3f_seed_%s' % (
         config.dataset_name,
         config.model,
         config.coeff_smoothness,
         config.coeff_latent,
-        config.random_seed)
+        config.random_seed,
+    )
+
+    config.output_save_path = '%s/%s' % (config.output_save_folder, setting_str)
 
     # Initialize save folder.
     if run_count is None:
@@ -47,6 +49,6 @@ def parse_settings(config: AttributeHashmap, log_settings: bool = True, run_coun
         log_str += '\nTraining History:'
         log(log_str, filepath=config.log_dir, to_console=True)
 
-    config.model_save_path = config.save_folder + config.output_save_path.split('/')[-2] + '.pty'
+    config.model_save_path = config.save_folder + setting_str + '.pty'
 
     return config

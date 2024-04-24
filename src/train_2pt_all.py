@@ -30,6 +30,8 @@ from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
 from nn.unet_ode import ODEUNet
 from nn.unet_ode_static import StaticODEUNet
+from nn.unet_ode_simple import ODEUNetSimple
+from nn.unet_ode_simple_static import StaticODEUNetSimple
 from nn.unet_t_emb import T_UNet
 from nn.unet_i2sb import I2SBUNet
 from nn.off_the_shelf_encoder import VisionEncoder
@@ -909,7 +911,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning-rate', default=1e-4, type=float)
     parser.add_argument('--max-epochs', default=120, type=int)
     parser.add_argument('--batch-size', default=64, type=int)
-    parser.add_argument('--t-multiplier', default=0.1, type=int)  # only relevant to ODE
+    parser.add_argument('--t-multiplier', default=0.2, type=int)  # only relevant to ODE
     parser.add_argument('--depth', default=5, type=int)           # only relevant to simple unet
     parser.add_argument('--num-filters', default=64, type=int)    # only relevant to simple unet
     parser.add_argument('--num-workers', default=8, type=int)

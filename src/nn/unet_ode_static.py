@@ -104,8 +104,6 @@ class StaticODEUNet(BaseNetwork):
             integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
         h_skip_connection = []
-        if return_grad:
-            vec_field_gradients = 0
 
         # Provide a dummy time embedding, since we are learning a static ODE vector field.
         dummy_t = torch.zeros_like(t).to(t.device)
@@ -116,8 +114,6 @@ class StaticODEUNet(BaseNetwork):
             h = module(h, emb)
             if use_ode:
                 ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-                if return_grad:
-                    vec_field_gradients += self.ode_list[ode_idx].vec_grad()
                 h_skip = self.ode_list[ode_idx](h, integration_time)
                 h_skip_connection.append(h_skip)
             else:
@@ -126,16 +122,17 @@ class StaticODEUNet(BaseNetwork):
         h = self.unet.middle_block(h, emb)
         if use_ode:
             ode_idx = np.argwhere(np.array(self.dim_list) == h.shape[1]).item()
-            if return_grad:
-                vec_field_gradients += self.ode_list[ode_idx].vec_grad()
             h = self.ode_list[ode_idx](h, integration_time)
 
         for module in self.unet.output_blocks:
-            h = torch.cat([h, h_skip_connection.pop()], dim=1)
+            h = torch.cat([h, h_skip_connection.pop(-1)], dim=1)
             h = module(h, emb)
         h = h.type(x.dtype)
 
         if return_grad:
-            return self.unet.out(h), vec_field_gradients.mean() / (len(self.unet.input_blocks) + 1)
+            vec_field_gradients = 0
+            for i in range(len(self.ode_list)):
+                vec_field_gradients += self.ode_list[i].vec_grad()
+            return self.unet.out(h), vec_field_gradients.mean() / len(self.ode_list)
         else:
             return self.unet.out(h)

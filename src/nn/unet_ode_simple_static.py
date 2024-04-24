@@ -1,9 +1,9 @@
 from .base import BaseNetwork
-from .nn_utils import ConvBlock, ResConvBlock, ODEfunc, ODEBlock
+from .nn_utils import ConvBlock, ResConvBlock, StaticODEfunc, ODEBlock
 import torch
 
 
-class ODEUNetSimple(BaseNetwork):
+class StaticODEUNetSimple(BaseNetwork):
 
     def __init__(self,
                  device: torch.device = torch.device('cpu'),
@@ -75,7 +75,7 @@ class ODEUNetSimple(BaseNetwork):
         self.up_list = torch.nn.ModuleList([])
         self.up_conn_list = torch.nn.ModuleList([])
         for d in range(self.depth):
-            self.ode_list.append(ODEBlock(ODEfunc(dim=n_f * 2 ** d)))
+            self.ode_list.append(ODEBlock(StaticODEfunc(dim=n_f * 2 ** d)))
             self.up_list.append(upconv_block(n_f * 2 ** d))
             if self.use_bn:
                 self.up_conn_list.append(torch.nn.Sequential(
@@ -88,7 +88,7 @@ class ODEUNetSimple(BaseNetwork):
         self.up_list = self.up_list[::-1]
         self.up_conn_list = self.up_conn_list[::-1]
 
-        self.ode_bottleneck = ODEBlock(ODEfunc(dim=n_f * 2 ** self.depth))
+        self.ode_bottleneck = ODEBlock(StaticODEfunc(dim=n_f * 2 ** self.depth))
         self.out_layer = torch.nn.Conv2d(n_f, out_channels, 1)
 
     def time_independent_parameters(self):
