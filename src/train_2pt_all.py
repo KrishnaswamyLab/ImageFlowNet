@@ -3,7 +3,6 @@ import ast
 import os
 import sys
 import cv2
-import yaml
 from typing import Tuple
 
 from matplotlib import pyplot as plt
@@ -48,6 +47,15 @@ def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Ten
     noise = intensity * torch.randn_like(img)
     return img + noise
 
+def neg_cos_sim(p: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+    '''
+    Negative cosine similarity
+    '''
+    z = z.detach() # stop gradient
+    p = torch.nn.functional.normalize(p, p=2, dim=1) # l2-normalize
+    z = torch.nn.functional.normalize(z, p=2, dim=1) # l2-normalize
+    return -(p * z).sum(dim=1).mean()
+
 def train(config: AttributeHashmap):
     device = torch.device(
         'cuda:%d' % config.gpu_id if torch.cuda.is_available() else 'cpu')
@@ -84,6 +92,7 @@ def train(config: AttributeHashmap):
                                         ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
+                                        contrastive=config.coeff_contrastive > 0,
                                         **kwargs)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
@@ -208,7 +217,25 @@ def train_epoch(config: AttributeHashmap,
         x_start_recon = model(x=x_start_noisy, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end_noisy, t=torch.zeros(1).to(device))
 
-        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon)
+        latent_loss, contrastive_loss = 0, 0
+        if config.coeff_latent > 0:
+            # Regularize on latent embedding of image.
+            latent_start_recon = vision_encoder.embed(x_start_recon)
+            latent_start = vision_encoder.embed(x_start)
+            latent_end_recon = vision_encoder.embed(x_end_recon)
+            latent_end = vision_encoder.embed(x_end)
+            latent_loss = \
+                1/2 * (1 - torch.nn.functional.cosine_similarity(latent_start_recon, latent_start, dim=1).mean()) + \
+                1/2 * (1 - torch.nn.functional.cosine_similarity(latent_end_recon, latent_end, dim=1).mean())
+
+        if config.coeff_contrastive > 0:
+            z1, z2 = model.simsiam_project(x_start_noisy), model.simsiam_project(x_end_noisy)
+            p1, p2 = model.simsiam_predict(z1), model.simsiam_predict(z2)
+            contrastive_loss = neg_cos_sim(p1, z2)/2 + neg_cos_sim(p2, z1)/2
+
+        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon) + \
+            config.coeff_latent * latent_loss + config.coeff_contrastive * contrastive_loss
+
         train_loss_recon += loss_recon.item()
 
         # Simulate `config.batch_size` by batched optimizer update.
@@ -237,9 +264,13 @@ def train_epoch(config: AttributeHashmap,
                 # Regularize on latent embedding of image.
                 latent_end_pred = vision_encoder.embed(x_end_pred)
                 latent_end = vision_encoder.embed(x_end)
-                latent_loss = 1 - 0.5 * torch.nn.functional.cosine_similarity(latent_end_pred, latent_end, dim=1).mean()
+                latent_loss = 1/2 * (1 - torch.nn.functional.cosine_similarity(latent_end_pred, latent_end, dim=1).mean())
 
-            loss_pred = mse_loss(x_end, x_end_pred) + config.coeff_smoothness * smoothness_loss + config.coeff_latent * latent_loss
+            if config.no_l2:
+                loss_pred = config.coeff_smoothness * smoothness_loss + config.coeff_latent * latent_loss
+            else:
+                loss_pred = mse_loss(x_end, x_end_pred) + config.coeff_smoothness * smoothness_loss + config.coeff_latent * latent_loss
+
             train_loss_pred += loss_pred.item()
 
             # Simulate `config.batch_size` by batched optimizer update.
@@ -594,6 +625,7 @@ def test(config: AttributeHashmap):
                                         ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
+                                        contrastive=config.coeff_contrastive > 0,
                                         **kwargs)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
@@ -733,10 +765,63 @@ def test(config: AttributeHashmap):
         test_recon_psnr = test_recon_psnr / len(test_set.dataset)
         test_recon_ssim = test_recon_ssim / len(test_set.dataset)
 
-        log('[Best %s] Test loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f'
-            % (best_type, test_loss, test_recon_psnr, test_recon_ssim, np.mean(test_pred_psnr), np.mean(test_pred_ssim)) + \
-            ' DSC (pred): %.3f, HD (pred): %.3f, MAE (pred): %.3f, MSE (pred): %.3f'
-            % (np.mean(test_seg_dice), np.mean(test_seg_hd), np.mean(test_residual_mae), np.mean(test_residual_mse)),
+        test_pred_psnr = np.array(test_pred_psnr)
+        test_pred_ssim = np.array(test_pred_ssim)
+        test_seg_dice = np.array(test_seg_dice)
+        test_seg_hd = np.array(test_seg_hd)
+        test_residual_mae = np.array(test_residual_mae)
+        test_residual_mse = np.array(test_residual_mse)
+        test_seg_dice_gt = np.array(test_seg_dice_gt)
+
+        growth_dice_thr = 0.9
+
+        test_pred_psnr_minor_growth = test_pred_psnr[test_seg_dice_gt > growth_dice_thr]
+        test_pred_ssim_minor_growth = test_pred_ssim[test_seg_dice_gt > growth_dice_thr]
+        test_seg_dice_minor_growth = test_seg_dice[test_seg_dice_gt > growth_dice_thr]
+        test_seg_hd_minor_growth = test_seg_hd[test_seg_dice_gt > growth_dice_thr]
+        test_residual_mae_minor_growth = test_residual_mae[test_seg_dice_gt > growth_dice_thr]
+        test_residual_mse_minor_growth = test_residual_mse[test_seg_dice_gt > growth_dice_thr]
+
+        test_pred_psnr_major_growth = test_pred_psnr[test_seg_dice_gt <= growth_dice_thr]
+        test_pred_ssim_major_growth = test_pred_ssim[test_seg_dice_gt <= growth_dice_thr]
+        test_seg_dice_major_growth = test_seg_dice[test_seg_dice_gt <= growth_dice_thr]
+        test_seg_hd_major_growth = test_seg_hd[test_seg_dice_gt <= growth_dice_thr]
+        test_residual_mae_major_growth = test_residual_mae[test_seg_dice_gt <= growth_dice_thr]
+        test_residual_mse_major_growth = test_residual_mse[test_seg_dice_gt <= growth_dice_thr]
+
+        log('[Best %s] Test loss: %.3f, PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f \u00B1 %.3f, SSIM (pred): %.3f \u00B1 %.3f'
+            % (best_type, test_loss, test_recon_psnr, test_recon_ssim,
+               np.mean(test_pred_psnr), np.std(test_pred_psnr) / np.sqrt(len(test_pred_psnr)),
+               np.mean(test_pred_ssim), np.std(test_pred_ssim) / np.sqrt(len(test_pred_ssim))) + \
+            ' MAE (pred): %.3f \u00B1 %.3f, MSE (pred): %.3f \u00B1 %.3f, DSC (pred): %.3f \u00B1 %.3f, HD (pred): %.3f \u00B1 %.3f'
+            % (np.mean(test_residual_mae), np.std(test_residual_mae) / np.sqrt(len(test_residual_mae)),
+               np.mean(test_residual_mse), np.std(test_residual_mse) / np.sqrt(len(test_residual_mse)),
+               np.mean(test_seg_dice), np.std(test_seg_dice) / np.sqrt(len(test_seg_dice)),
+               np.mean(test_seg_hd), np.std(test_seg_hd) / np.sqrt(len(test_seg_hd))),
+            filepath=config.log_dir,
+            to_console=True)
+
+        log('Minor growth (GT dice > %s) PSNR (pred): %.3f \u00B1 %.3f, SSIM (pred): %.3f \u00B1 %.3f'
+            % (growth_dice_thr,
+               np.mean(test_pred_psnr_minor_growth), np.std(test_pred_psnr_minor_growth) / np.sqrt(len(test_pred_psnr_minor_growth)),
+               np.mean(test_pred_ssim_minor_growth), np.std(test_pred_ssim_minor_growth) / np.sqrt(len(test_pred_ssim_minor_growth))) + \
+            ' MAE (pred): %.3f \u00B1 %.3f, MSE (pred): %.3f \u00B1 %.3f, DSC (pred): %.3f \u00B1 %.3f, HD (pred): %.3f \u00B1 %.3f'
+            % (np.mean(test_residual_mae_minor_growth), np.std(test_residual_mae_minor_growth) / np.sqrt(len(test_residual_mae_minor_growth)),
+               np.mean(test_residual_mse_minor_growth), np.std(test_residual_mse_minor_growth) / np.sqrt(len(test_residual_mse_minor_growth)),
+               np.mean(test_seg_dice_minor_growth), np.std(test_seg_dice_minor_growth) / np.sqrt(len(test_seg_dice_minor_growth)),
+               np.mean(test_seg_hd_minor_growth), np.std(test_seg_hd_minor_growth) / np.sqrt(len(test_seg_hd_minor_growth))),
+            filepath=config.log_dir,
+            to_console=True)
+
+        log('Major growth (GT dice <= %s) PSNR (pred): %.3f \u00B1 %.3f, SSIM (pred): %.3f \u00B1 %.3f'
+            % (growth_dice_thr,
+               np.mean(test_pred_psnr_major_growth), np.std(test_pred_psnr_major_growth) / np.sqrt(len(test_pred_psnr_major_growth)),
+               np.mean(test_pred_ssim_major_growth), np.std(test_pred_ssim_major_growth) / np.sqrt(len(test_pred_ssim_major_growth))) + \
+            ' MAE (pred): %.3f \u00B1 %.3f, MSE (pred): %.3f \u00B1 %.3f, DSC (pred): %.3f \u00B1 %.3f, HD (pred): %.3f \u00B1 %.3f'
+            % (np.mean(test_residual_mae_major_growth), np.std(test_residual_mae_major_growth) / np.sqrt(len(test_residual_mae_major_growth)),
+               np.mean(test_residual_mse_major_growth), np.std(test_residual_mse_major_growth) / np.sqrt(len(test_residual_mse_major_growth)),
+               np.mean(test_seg_dice_major_growth), np.std(test_seg_dice_major_growth) / np.sqrt(len(test_seg_dice_major_growth)),
+               np.mean(test_seg_hd_major_growth), np.std(test_seg_hd_major_growth) / np.sqrt(len(test_seg_hd_major_growth))),
             filepath=config.log_dir,
             to_console=True)
 
@@ -750,7 +835,7 @@ def test(config: AttributeHashmap):
             'MAE(xT_true, xT_pred)': test_residual_mae,
             'MSE(xT_true, xT_pred)': test_residual_mse,
         })
-        results_df.to_csv(config.log_dir.replace('.txt', best_type + '.csv'))
+        results_df.to_csv(config.log_dir.replace('log.txt', best_type + '.csv'))
 
     return
 
@@ -918,13 +1003,16 @@ if __name__ == '__main__':
     parser.add_argument('--ode-location', default='all_connections', type=str)  # only relevant to ODE
     parser.add_argument('--depth', default=5, type=int)             # only relevant to simple unet
     parser.add_argument('--num-filters', default=64, type=int)      # only relevant to simple unet
+    parser.add_argument('--diffusion-interval', default=100, type=int)      # only relevant to I2SB
     parser.add_argument('--num-workers', default=8, type=int)
     parser.add_argument('--train-val-test-ratio', default='6:2:2', type=str)
     parser.add_argument('--max-training-samples', default=2048, type=int)
     parser.add_argument('--n-plot-per-epoch', default=4, type=int)
 
+    parser.add_argument('--no-l2', action='store_true')  # only relevant to ODE
     parser.add_argument('--coeff-smoothness', default=0, type=float)  # only relevant to ODE
     parser.add_argument('--coeff-latent', default=0, type=float)
+    parser.add_argument('--coeff-contrastive', default=0, type=float)
     parser.add_argument('--pretrained-vision-model', default='convnext_tiny', type=str)
 
     args = vars(parser.parse_args())

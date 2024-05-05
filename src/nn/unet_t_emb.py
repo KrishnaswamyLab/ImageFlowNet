@@ -35,8 +35,8 @@ class T_UNet(BaseNetwork):
         self.model = create_model(
             image_size=256,  # TODO: currently hard coded
             in_channels=in_channels,
-            num_channels=256,
-            num_res_blocks=2,
+            num_channels=64,
+            num_res_blocks=1,
             channel_mult='',
             learn_sigma=False,
             class_cond=False,
@@ -59,6 +59,11 @@ class T_UNet(BaseNetwork):
         assert t.dim()==1 and t.shape[0] == x.shape[0]
         return self.model(x, t)
 
+    def freeze_time_independent(self):
+        '''
+        Freeze paramters that are time-independent.
+        '''
+        pass
 
 
 # class T_UNet(BaseNetwork):

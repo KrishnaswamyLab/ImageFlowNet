@@ -1,15 +1,14 @@
 import argparse
+import ast
 import os
 
 import monai
 import albumentations as A
 import numpy as np
 import torch
-import yaml
 from data_utils.prepare_dataset import prepare_dataset_segmentation
 from tqdm import tqdm
 from utils.attribute_hashmap import AttributeHashmap
-from utils.early_stop import EarlyStopping
 from utils.log_util import log
 from utils.metrics import dice_coeff, hausdorff
 from utils.parse import parse_settings
@@ -54,9 +53,6 @@ def train(config: AttributeHashmap):
 
     optimizer = torch.optim.AdamW(model.parameters(),
                                   lr=config.learning_rate)
-    early_stopper = EarlyStopping(mode='min',
-                                  patience=config.patience,
-                                  percentage=False)
 
     loss_fn = torch.nn.BCELoss()
     best_val_loss = np.inf
@@ -161,12 +157,6 @@ def train(config: AttributeHashmap):
                 filepath=config.log_dir,
                 to_console=False)
 
-        if early_stopper.step(val_loss):
-            # If the validation loss stop decreasing, stop training.
-            log('Early stopping criterion met. Ending training.',
-                filepath=config.log_dir,
-                to_console=True)
-            break
     return
 
 
@@ -241,25 +231,36 @@ def test(config: AttributeHashmap):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', help='`train` or `test`?', required=True)
-    parser.add_argument('--config',
-                        help='Path to config yaml file.',
-                        required=True)
-    parser.add_argument('--run_count', default=None, type=int)
+    parser = argparse.ArgumentParser(description='Entry point.')
+    parser.add_argument('--mode', help='`train` or `test`?', default='train')
+    parser.add_argument('--gpu-id', help='Index of GPU device', default=0)
+    parser.add_argument('--run-count', default=None, type=int)
+
+    parser.add_argument('--dataset-name', default='retina_ucsf', type=str)
+    parser.add_argument('--target-dim', default='(256, 256)', type=ast.literal_eval)
+    parser.add_argument('--image-folder', default='UCSF_images_final_512x512', type=str)
+    parser.add_argument('--mask-folder', default='UCSF_masks_final_512x512', type=str)
+    parser.add_argument('--dataset-path', default='$ROOT/data/retina_ucsf/', type=str)
+    parser.add_argument('--segmentor-ckpt', default='$ROOT/checkpoint_try2/segment_retinaUCSF_seed1.pty', type=str)
+
+    parser.add_argument('--random-seed', default=1, type=int)
+    parser.add_argument('--learning-rate', default=1e-3, type=float)
+    parser.add_argument('--max-epochs', default=120, type=int)
+    parser.add_argument('--batch-size', default=8, type=int)
+    parser.add_argument('--num-workers', default=4, type=int)
+    parser.add_argument('--train-val-test-ratio', default='6:2:2', type=str)
+    parser.add_argument('--max-training-samples', default=1024, type=int)  # this also extends dataset
+
     args = vars(parser.parse_args())
+    config = AttributeHashmap(args)
+    config = parse_settings(config, segmentor=True, log_settings=config.mode == 'train', run_count=config.run_count)
 
-    args = AttributeHashmap(args)
-    config = AttributeHashmap(yaml.safe_load(open(args.config)))
-    config.config_file_name = args.config
-    config = parse_settings(config, log_settings=args.mode == 'train', run_count=args.run_count)
-
-    assert args.mode in ['train', 'test']
+    assert config.mode in ['train', 'test']
 
     seed_everything(config.random_seed)
 
-    if args.mode == 'train':
+    if config.mode == 'train':
         train(config=config)
         test(config=config)
-    elif args.mode == 'test':
+    elif config.mode == 'test':
         test(config=config)

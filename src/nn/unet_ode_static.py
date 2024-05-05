@@ -17,6 +17,7 @@ class StaticODEUNet(BaseNetwork):
                  device: torch.device,
                  in_channels: int,
                  ode_location: str = 'all_connections',
+                 contrastive: bool = False,
                  **kwargs):
         '''
         A UNet model with ODE.
@@ -32,6 +33,10 @@ class StaticODEUNet(BaseNetwork):
             If 'bottleneck', only perform ODE on the bottleneck layer.
             If 'all_resolutions', skip connections with the same resolution share the same ODE.
             If 'all_connections', perform ODE separately in all skip connections.
+
+        contrastive: bool
+            Whether or not to perform contrastive learning (SimSiam) on bottleneck layer.
+
         All other kwargs will be ignored.
         '''
         super().__init__()
@@ -39,6 +44,8 @@ class StaticODEUNet(BaseNetwork):
         self.device = device
         self.ode_location = ode_location
         assert self.ode_location in ['bottleneck', 'all_resolutions', 'all_connections']
+        self.contrastive = contrastive
+
         image_size = 256  # TODO: currently hard coded
 
         # NOTE: This model is smaller than the other counterparts,
@@ -47,7 +54,7 @@ class StaticODEUNet(BaseNetwork):
         self.unet = create_model(
             image_size=image_size,
             in_channels=in_channels,
-            num_channels=128,
+            num_channels=64,
             num_res_blocks=1,
             channel_mult='',
             learn_sigma=False,
@@ -55,7 +62,7 @@ class StaticODEUNet(BaseNetwork):
             use_checkpoint=False,
             attention_resolutions='32,16,8',
             num_heads=4,
-            num_head_channels=64,
+            num_head_channels=16,
             num_heads_upsample=-1,
             use_scale_shift_norm=True,
             dropout=0.0,
@@ -87,6 +94,21 @@ class StaticODEUNet(BaseNetwork):
 
         self.unet.to(self.device)
         self.ode_list.to(self.device)
+
+        if self.contrastive:
+            pred_dim = 512
+            self.projector = torch.nn.Sequential(
+                torch.nn.Linear(h_dummy_bottleneck.shape[1] *
+                                h_dummy_bottleneck.shape[2] *
+                                h_dummy_bottleneck.shape[3], pred_dim)
+            )
+            self.predictor = torch.nn.Sequential(
+                torch.nn.Linear(pred_dim, pred_dim, bias=False),
+                torch.nn.ReLU(inplace=True),
+                torch.nn.Linear(pred_dim, pred_dim),
+            )
+            self.projector.to(self.device)
+            self.predictor.to(self.device)
 
     def time_independent_parameters(self):
         '''
@@ -161,3 +183,82 @@ class StaticODEUNet(BaseNetwork):
             return output, vec_field_gradients.mean() / len(self.ode_list)
         else:
             return output
+
+    def simsiam_project(self, x: torch.Tensor):
+        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        dummy_t = torch.zeros(1).to(x.device)
+        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+
+        h = x.type(self.unet.dtype)
+        # Contraction path.
+        for module in self.unet.input_blocks:
+            h = module(h, emb)
+        # Bottleneck
+        h = self.unet.middle_block(h, emb)
+
+        h = h.reshape(h.shape[0], -1)
+
+        z = self.projector(h)
+        return z
+
+    def simsiam_predict(self, z: torch.Tensor):
+        z = self.predictor(z)
+        return z
+
+    @torch.no_grad()
+    def return_embeddings(self, x: torch.Tensor, t: torch.Tensor):
+        """
+        Store and return the embedding vectors.
+
+        :param x: an [N x C x ...] Tensor of inputs.
+        :param t: a 1-D batch of timesteps.
+        """
+        embeddings_before = []
+        embeddings_after = []
+
+        # Skip ODE if no time difference.
+        use_ode = t.item() != 0
+        if use_ode:
+            integration_time = torch.tensor([0, t.item()]).float().to(t.device)
+
+        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        dummy_t = torch.zeros_like(t).to(t.device)
+        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+
+        h = x.type(self.unet.dtype)
+
+        # Contraction path.
+        h_skip_connection = []
+        for module in self.unet.input_blocks:
+            h = module(h, emb)
+            h_skip_connection.append(h)
+
+        # Bottleneck
+        h = self.unet.middle_block(h, emb)
+
+        # ODE on bottleneck
+        embeddings_before.append(h)
+        if use_ode:
+            h = self.ode_list[-1](h, integration_time)
+            embeddings_after.append(h)
+
+        # Expansion path.
+        for module_idx, module in enumerate(self.unet.output_blocks):
+            h_skip = h_skip_connection.pop(-1)
+
+            # ODE over skip connections.
+            embeddings_before.append(h_skip)
+            if use_ode and self.ode_location in ['all_resolutions', 'all_connections']:
+                if self.ode_location == 'all_connections':
+                    curr_ode_block = self.ode_list[::-1][module_idx + 1]
+                else:
+                    resolution_idx = np.argwhere(np.unique(self.dim_list) == h_skip.shape[1]).item()
+                    curr_ode_block = self.ode_list[resolution_idx]
+
+                h_skip = curr_ode_block(h_skip, integration_time)
+                embeddings_after.append(h_skip)
+
+            h = torch.cat([h, h_skip], dim=1)
+            h = module(h, emb)
+
+        return embeddings_before, embeddings_after

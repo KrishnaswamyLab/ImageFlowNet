@@ -121,7 +121,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
     def __init__(self,
                  main_dataset: RetinaUCSFDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences'],
+                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'full_sequence'],
                  transforms = None,
                 #  min_time_diff: int = 6,
                  pos_neg_pairs: bool = False):
@@ -173,6 +173,9 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         elif self.return_format == 'all_subsequences':
             # If we return all subsequences of images per patient...
             return len(self.all_subsequences)
+        elif self.return_format == 'full_sequence':
+            # If we return the full sequences of images per patient...
+            return len(self.image_by_patient)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
         if self.return_format == 'one_pair':
@@ -222,6 +225,13 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             ])
             timestamps = np.array([get_time(img) for img in queried_sequence])
 
+        elif self.return_format == 'full_sequence':
+            queried_sequence = self.image_by_patient[idx]
+            images = np.array([
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
+            ])
+            timestamps = np.array([get_time(img) for img in queried_sequence])
+
         if self.return_format in ['one_pair', 'all_pairs']:
             assert len(images) == 2
             image1, image2 = images[0], images[1]
@@ -238,7 +248,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
 
             images = np.vstack((image1[None, ...], image2[None, ...]))
 
-        elif self.return_format == 'all_subsequences':
+        elif self.return_format in ['all_subsequences', 'full_sequence']:
             num_images = len(images)
             assert num_images >= 2
             assert num_images < 10  # NOTE: see `additional_targets` in `transform`.
@@ -335,7 +345,7 @@ class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
             image = transformed["image"]
             mask = transformed["mask"]
 
-        image = image / 255 * 2 - 1
+        image = normalize_image(image)
         mask = mask > 128
 
         image = add_channel_dim(image)
