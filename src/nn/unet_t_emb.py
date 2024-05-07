@@ -35,8 +35,8 @@ class T_UNet(BaseNetwork):
         self.model = create_model(
             image_size=256,  # TODO: currently hard coded
             in_channels=in_channels,
-            num_channels=64,
-            num_res_blocks=1,
+            num_channels=256,
+            num_res_blocks=2,
             channel_mult='',
             learn_sigma=False,
             class_cond=False,

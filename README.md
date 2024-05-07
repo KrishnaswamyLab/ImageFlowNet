@@ -43,27 +43,49 @@ cd src/
 python train_segmentor.py --mode train --config ../config/segment_retinaUCSF_seed1.yaml
 ```
 
-### Training the main network (matching between 2 timepoints).
+### Training the main network.
 ```
 cd src/
 # Time-conditional UNet (baseline)
-python train_2pt_all.py --mode train --config ../config/retinaUCSF_T-UNet_seed1.yaml
+python train_2pt_all.py --model T_UNet --random-seed 1 --mode train
+python train_2pt_all.py --model T_UNet --random-seed 1 --mode test --run-count 1
 
 # Schrodinger Bridge
-python train_2pt_all.py --mode train --config ../config/retinaUCSF_I2SB_seed1.yaml
+python train_2pt_all.py --model I2SBUNet --random-seed 1
+python train_2pt_all.py --model I2SBUNet --random-seed 1 --mode test --run-count 1
 
 # ODE-UNet
-python train_2pt_all.py --mode train --config ../config/retinaUCSF_ODEUNet_seed1.yaml
+python train_2pt_all.py --model StaticODEUNet --random-seed 1
+python train_2pt_all.py --model StaticODEUNet --random-seed 1 --mode test --run-count 1
 ```
 
-### Training the main network (matching between multiple timepoints).
+### Additional configurations to try.
+1. Gradient field formulation.
 ```
-cd src/
-# Schrodinger Bridge
-?
+python train_2pt_all.py --model ODEUNet
+python train_2pt_all.py --model StaticODEUNet
+```
 
-# CDE-UNet
-python train_npt_cde.py --mode train --config ../config/retinaUCSF_CDEUNet_seed1.yaml
+2. Which latent representations for ODE?
+```
+python train_2pt_all.py --model StaticODEUNet --ode-location 'bottleneck'
+python train_2pt_all.py --model StaticODEUNet --ode-location 'all_resolutions'
+python train_2pt_all.py --model StaticODEUNet --ode-location 'all_connections' # default
+```
+
+3. Latent feature regularization.
+```
+python train_2pt_all.py --model StaticODEUNet --coeff-latent 0.1
+```
+
+4. Contrastive learning regularization.
+```
+python train_2pt_all.py --model StaticODEUNet --coeff-contrastive 0.1
+```
+
+5. Trajectory smoothness regularization.
+```
+python train_2pt_all.py --model StaticODEUNet --coeff-smoothness 0.1
 ```
 
 
@@ -88,6 +110,7 @@ python -m pip install monai
 python -m pip install torchdiffeq
 python -m pip install torch-ema
 python -m pip install torchcde
+python -m pip install phate
 ```
 
 
