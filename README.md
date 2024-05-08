@@ -110,6 +110,7 @@ python -m pip install monai
 python -m pip install torchdiffeq
 python -m pip install torch-ema
 python -m pip install torchcde
+python -m pip install torchsde
 python -m pip install phate
 ```
 

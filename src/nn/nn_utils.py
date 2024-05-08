@@ -1,8 +1,9 @@
 import math
+import numpy as np
 import torch
 from torchdiffeq import odeint
 import torchcde
-
+import torchsde
 
 class ODEfunc(torch.nn.Module):
 
@@ -13,6 +14,7 @@ class ODEfunc(torch.nn.Module):
         self.conv1 = ConcatConv2d(dim, dim, 3, 1, 1)
         self.norm2 = torch.nn.InstanceNorm2d(dim)
         self.conv2 = ConcatConv2d(dim, dim, 3, 1, 1)
+        self.dim = dim
         self.nfe = 0
 
     def forward(self, t, x):
@@ -34,6 +36,7 @@ class StaticODEfunc(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
         self.norm2 = torch.nn.InstanceNorm2d(dim)
         self.conv2 = torch.nn.Conv2d(dim, dim, 3, 1, 1)
+        self.dim = dim
         self.nfe = 0
 
     def forward(self, t, x):
@@ -80,6 +83,101 @@ class ODEBlock(torch.nn.Module):
     @nfe.setter
     def nfe(self, value):
         self.odefunc.nfe = value
+
+
+class SDEFunc(torch.nn.Module):
+    '''
+    Stochastic Differential Equation Func.
+
+    It has to include class 2 methods:
+    self.f: the drift term.
+    self.g: the diffusion term.
+
+    NOTE: self.noise_type and self.sde_type are required for torchsde.
+    '''
+    def __init__(self, sde_func_drift, sde_func_diffusion, noise_type='diagonal', sde_type='ito'):
+        super().__init__()
+        self.sde_func_drift = sde_func_drift
+        self.sde_func_diffusion = sde_func_diffusion
+        self.noise_type = noise_type
+        self.sde_type = sde_type
+
+        assert self.sde_func_drift.dim == self.sde_func_diffusion.dim
+        self.dim = self.sde_func_drift.dim
+
+    # calculates the drift
+    def f(self, t, x):
+        '''
+        Assuming x is a flattened tensor of [B, C, H, W] and H == W.
+        '''
+        x_spatial_dim = int(np.sqrt(x.shape[-1] / self.dim))
+        x = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
+        sde_drift = self.sde_func_drift(t, x)
+        return sde_drift.reshape(sde_drift.shape[0], -1)
+
+    # calculates the diffusion
+    def g(self, t, x):
+        x_spatial_dim = int(np.sqrt(x.shape[-1] / self.dim))
+        x = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
+        sde_diffusion = self.sde_func_diffusion(t, x)
+        return sde_diffusion.reshape(sde_diffusion.shape[0], -1)
+
+    def forward(self, t, x):
+        sde_drift = self.f(t, x)
+        sde_diffusion = self.g(t, x)
+        return sde_drift, sde_diffusion
+
+    def init_params(self):
+        '''
+        Initialization trick from Glow.
+        '''
+        pass
+        # Don't have linear layer in it.
+        # self.sde_func_drift[-1].weight.data.fill_(0.)
+        # self.sde_func_drift[-1].bias.data.fill_(0.)
+        # self.sde_func_diffusion[-1].weight.data.fill_(0.)
+        # self.sde_func_diffusion[-1].bias.data.fill_(0.)
+
+class SDEBlock(torch.nn.Module):
+    '''
+    Stochastic Differential Equation block.
+    '''
+
+    def __init__(self,
+                 sdefunc,
+                 tolerance: float = 1e-3,
+                 adjoint: bool = False):
+
+        super().__init__()
+
+        self.sdefunc = sdefunc
+        self.tolerance = tolerance
+        self.adjoint = adjoint
+
+    def forward(self, x, integration_time):
+        integration_time = integration_time.type_as(x)
+        x = x.reshape(x.shape[0], -1)
+        out = torchsde.sdeint(self.sdefunc,
+                              x,
+                              integration_time,
+                              rtol=self.tolerance,
+                              atol=self.tolerance)
+        out_spatial_dim = int(np.sqrt(out.shape[-1] / self.sdefunc.dim))
+        out = out.reshape(out.shape[0], self.sdefunc.dim, out_spatial_dim, out_spatial_dim)
+        return out[1].unsqueeze(0)
+
+    def init_params(self):
+        self.sdefunc.init_params()
+
+    def vec_grad(self):
+        '''
+        NOTE: Only taking care of Conv2d weights.
+        '''
+        sum_weight_sq_norm = 0
+        for m in self.sdefunc.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                sum_weight_sq_norm += (m.weight ** 2).sum()
+        return sum_weight_sq_norm
 
 
 class LatentClassifier(torch.nn.Module):
@@ -185,11 +283,13 @@ class SODEBlock(torch.nn.Module):
 
     def vec_grad(self):
         '''
-        NOTE: Assuming self.odefunc only has weights in conv1 and conv2.
+        NOTE: Only taking care of Conv2d weights.
         '''
-        w1 = self.odefunc.conv1.weight
-        w2 = self.odefunc.conv2.weight
-        return (w1**2).sum() + (w2**2).sum()
+        sum_weight_sq_norm = 0
+        for m in self.odefunc.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                sum_weight_sq_norm += (m.weight ** 2).sum()
+        return sum_weight_sq_norm
 
     @property
     def nfe(self):

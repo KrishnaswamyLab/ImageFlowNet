@@ -31,6 +31,7 @@ from nn.unet_ode import ODEUNet
 from nn.unet_ode_static import StaticODEUNet
 from nn.unet_ode_simple import ODEUNetSimple
 from nn.unet_ode_simple_static import StaticODEUNetSimple
+from nn.unet_sde_static import StaticSDEUNet
 from nn.unet_t_emb import T_UNet
 from nn.unet_i2sb import I2SBUNet
 from nn.off_the_shelf_encoder import VisionEncoder
