@@ -1,7 +1,5 @@
 import os
-import sys
 from glob import glob
-import torch
 import cv2
 import numpy as np
 from tqdm import tqdm

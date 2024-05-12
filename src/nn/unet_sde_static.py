@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import torch
 from .base import BaseNetwork
-from .nn_utils import StaticODEfunc, SDEFunc, SDEBlock
+from .nn_utils import StaticODEfunc, ODEfunc, SDEFunc, SDEBlock
 
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
 sys.path.insert(0, import_dir + '/external_src/I2SB/')
@@ -85,22 +85,30 @@ class StaticSDEUNet(BaseNetwork):
         self.sde_list = torch.nn.ModuleList([])
 
         if self.sde_location == 'bottleneck':
-            self.sde_list.append(SDEBlock(SDEFunc(sde_func_drift=StaticODEfunc(dim=h_dummy_bottleneck.shape[1]),
-                                                  sde_func_diffusion=StaticODEfunc(dim=h_dummy_bottleneck.shape[1]))))
+            self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=h_dummy_bottleneck.shape[1]))))
         elif self.sde_location == 'all_resolutions':
             for dim in np.unique(self.dim_list):
-                self.sde_list.append(SDEBlock(SDEFunc(sde_func_drift=StaticODEfunc(dim=dim),
-                                                      sde_func_diffusion=StaticODEfunc(dim=dim))))
+                self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=dim))))
         elif self.sde_location == 'all_connections':
             for dim in self.dim_list:
-                self.sde_list.append(SDEBlock(SDEFunc(sde_func_drift=StaticODEfunc(dim=dim),
-                                                      sde_func_diffusion=StaticODEfunc(dim=dim))))
+                self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=dim))))
+        # if self.sde_location == 'bottleneck':
+        #     self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=h_dummy_bottleneck.shape[1]),
+        #                                           sde_sigma=ODEfunc(dim=h_dummy_bottleneck.shape[1]))))
+        # elif self.sde_location == 'all_resolutions':
+        #     for dim in np.unique(self.dim_list):
+        #         self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=dim),
+        #                                               sde_sigma=ODEfunc(dim=dim))))
+        # elif self.sde_location == 'all_connections':
+        #     for dim in self.dim_list:
+        #         self.sde_list.append(SDEBlock(SDEFunc(sde_mu=StaticODEfunc(dim=dim),
+        #                                               sde_sigma=ODEfunc(dim=dim))))
 
         self.unet.to(self.device)
         self.sde_list.to(self.device)
 
         if self.contrastive:
-            pred_dim = 512
+            pred_dim = 256
             self.projector = torch.nn.Sequential(
                 torch.nn.Linear(h_dummy_bottleneck.shape[1] *
                                 h_dummy_bottleneck.shape[2] *
@@ -133,7 +141,7 @@ class StaticSDEUNet(BaseNetwork):
         for p in self.time_independent_parameters():
             p.requires_grad = False
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, return_grad: bool = False):
+    def forward(self, x: torch.Tensor, t: torch.Tensor, return_grad: bool = False, checkpointing: bool = True):
         """
         Apply the model to an input batch.
 
@@ -156,11 +164,17 @@ class StaticSDEUNet(BaseNetwork):
         # Contraction path.
         h_skip_connection = []
         for module in self.unet.input_blocks:
-            h = module(h, emb)
+            if checkpointing and h.requires_grad and any(param.requires_grad for param in module.parameters()):
+                h = torch.utils.checkpoint.checkpoint(module, h, emb)
+            else:
+                h = module(h, emb)
             h_skip_connection.append(h)
 
         # Bottleneck
-        h = self.unet.middle_block(h, emb)
+        if checkpointing and h.requires_grad and any(param.requires_grad for param in self.unet.middle_block.parameters()):
+            h = torch.utils.checkpoint.checkpoint(self.unet.middle_block, h, emb)
+        else:
+            h = self.unet.middle_block(h, emb)
 
         # SDE on bottleneck
         if use_sde:
@@ -177,14 +191,24 @@ class StaticSDEUNet(BaseNetwork):
                 else:
                     resolution_idx = np.argwhere(np.unique(self.dim_list) == h_skip.shape[1]).item()
                     curr_sde_block = self.sde_list[resolution_idx]
-                h_skip = curr_sde_block(h_skip, integration_time)
+
+                if checkpointing and h_skip.requires_grad and any(param.requires_grad for param in curr_sde_block.parameters()):
+                    h_skip = torch.utils.checkpoint.checkpoint(curr_sde_block, h_skip, integration_time)
+                else:
+                    h_skip = curr_sde_block(h_skip, integration_time)
 
             h = torch.cat([h, h_skip], dim=1)
-            h = module(h, emb)
+            if checkpointing and h.requires_grad and any(param.requires_grad for param in module.parameters()):
+                h = torch.utils.checkpoint.checkpoint(module, h, emb)
+            else:
+                h = module(h, emb)
 
         # Output.
         h = h.type(x.dtype)
-        output = self.unet.out(h)
+        if checkpointing and h.requires_grad and any(param.requires_grad for param in self.unet.out.parameters()):
+            output = torch.utils.checkpoint.checkpoint(self.unet.out, h)
+        else:
+            output = self.unet.out(h)
 
         if return_grad:
             vec_field_gradients = 0
@@ -212,8 +236,8 @@ class StaticSDEUNet(BaseNetwork):
         return z
 
     def simsiam_predict(self, z: torch.Tensor):
-        z = self.predictor(z)
-        return z
+        p = self.predictor(z)
+        return p
 
     @torch.no_grad()
     def return_embeddings(self, x: torch.Tensor, t: torch.Tensor):

@@ -88,6 +88,25 @@ python train_2pt_all.py --model StaticODEUNet --coeff-contrastive 0.1
 python train_2pt_all.py --model StaticODEUNet --coeff-smoothness 0.1
 ```
 
+### Comparisons
+Image interpolation/extrapolation methods.
+```
+cd comparison/interpolation
+python run_baseline_interp.py --method linear
+python run_baseline_interp.py --method cubic_spline
+```
+
+Style-based Manifold Extrapolation (Nat. Mach. Int. 2022).
+```
+conda deactivate
+conda activate stylegan
+
+cd src/preprocessing
+python 04_unpack_retina_UCSF.py
+
+cd ../../comparison/style_manifold_extrapolation/stylegan2-ada-pytorch
+python train.py --outdir=../training-runs --data='../../../data/retina_ucsf/UCSF_images_final_unpacked_256x256/' --gpus=1
+```
 
 ## Dependencies
 We developed the codebase in a miniconda environment.
@@ -112,6 +131,21 @@ python -m pip install torch-ema
 python -m pip install torchcde
 python -m pip install torchsde
 python -m pip install phate
+python -m pip install psutil
+python -m pip install ninja
+```
+
+# Environment for stylegan2-ada
+```
+conda create --name stylegan python=3.8 -c anaconda
+conda activate stylegan
+conda install scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c anaconda -c conda-forge
+python -m pip install torch==1.8.1+cu111 torchvision==0.9.1+cu111 torchaudio==0.8.1 -f https://download.pytorch.org/whl/torch_stable.html
+python -m pip install opencv-python
+python -m pip install psutil
+python -m pip install ninja
+python -m pip install requests
+conda install -c conda-forge gcc=12.1.0
 ```
 
 

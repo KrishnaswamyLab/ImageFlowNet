@@ -95,15 +95,23 @@ class SDEFunc(torch.nn.Module):
 
     NOTE: self.noise_type and self.sde_type are required for torchsde.
     '''
-    def __init__(self, sde_func_drift, sde_func_diffusion, noise_type='diagonal', sde_type='ito'):
+    # def __init__(self, sde_mu, sde_sigma, noise_type='general', sde_type='ito'):
+    #     super().__init__()
+    #     self.sde_mu = sde_mu  # drift term
+    #     self.sde_sigma = sde_sigma  # diffusion term
+    #     self.noise_type = noise_type
+    #     self.sde_type = sde_type
+
+    #     assert self.sde_mu.dim == self.sde_sigma.dim
+    #     self.dim = self.sde_mu.dim
+    def __init__(self, sde_mu, sde_sigma=0.5, noise_type='diagonal', sde_type='ito'):
         super().__init__()
-        self.sde_func_drift = sde_func_drift
-        self.sde_func_diffusion = sde_func_diffusion
+        self.sde_mu = sde_mu  # drift term
+        # self.sde_sigma = sde_sigma # diffusion term
+        self.sde_sigma = torch.nn.Parameter(torch.tensor(sde_sigma), requires_grad=True) # diffusion term
         self.noise_type = noise_type
         self.sde_type = sde_type
-
-        assert self.sde_func_drift.dim == self.sde_func_diffusion.dim
-        self.dim = self.sde_func_drift.dim
+        self.dim = self.sde_mu.dim
 
     # calculates the drift
     def f(self, t, x):
@@ -111,21 +119,21 @@ class SDEFunc(torch.nn.Module):
         Assuming x is a flattened tensor of [B, C, H, W] and H == W.
         '''
         x_spatial_dim = int(np.sqrt(x.shape[-1] / self.dim))
-        x = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
-        sde_drift = self.sde_func_drift(t, x)
+        out = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
+        sde_drift = self.sde_mu(t, out)
         return sde_drift.reshape(sde_drift.shape[0], -1)
 
     # calculates the diffusion
-    def g(self, t, x):
-        x_spatial_dim = int(np.sqrt(x.shape[-1] / self.dim))
-        x = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
-        sde_diffusion = self.sde_func_diffusion(t, x)
-        return sde_diffusion.reshape(sde_diffusion.shape[0], -1)
+    # def g(self, t, x):
+    #     # Assuming a 1-dimensional Brownian motion.
+    #     x_spatial_dim = int(np.sqrt(x.shape[-1] / self.dim))
+    #     out = x.reshape(x.shape[0], self.dim, x_spatial_dim, x_spatial_dim)
+    #     sde_diffusion = self.sde_sigma(t, out)
+    #     return sde_diffusion.reshape(sde_diffusion.shape[0], -1, 1)
 
-    def forward(self, t, x):
-        sde_drift = self.f(t, x)
-        sde_diffusion = self.g(t, x)
-        return sde_drift, sde_diffusion
+    def g(self, t, x):
+        # Assuming a 1-dimensional Brownian motion.
+        return self.sde_sigma.expand_as(x)
 
     def init_params(self):
         '''
@@ -157,14 +165,19 @@ class SDEBlock(torch.nn.Module):
     def forward(self, x, integration_time):
         integration_time = integration_time.type_as(x)
         x = x.reshape(x.shape[0], -1)
-        out = torchsde.sdeint(self.sdefunc,
-                              x,
-                              integration_time,
-                              rtol=self.tolerance,
-                              atol=self.tolerance)
+
+        sde_int = torchsde.sdeint_adjoint if self.adjoint else torchsde.sdeint
+
+        out = sde_int(self.sdefunc,
+                      x,
+                      integration_time,
+                      dt=5e-2, # 1e-3 is too slow.
+                      method='euler', # otherwise OOM
+                      rtol=self.tolerance,
+                      atol=self.tolerance)
         out_spatial_dim = int(np.sqrt(out.shape[-1] / self.sdefunc.dim))
         out = out.reshape(out.shape[0], self.sdefunc.dim, out_spatial_dim, out_spatial_dim)
-        return out[1].unsqueeze(0)
+        return out[-1].unsqueeze(0)
 
     def init_params(self):
         self.sdefunc.init_params()

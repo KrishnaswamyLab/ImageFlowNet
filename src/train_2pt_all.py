@@ -50,7 +50,7 @@ def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Ten
 
 def neg_cos_sim(p: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
     '''
-    Negative cosine similarity
+    Negative cosine similarity. For SimSiam.
     '''
     z = z.detach() # stop gradient
     p = torch.nn.functional.normalize(p, p=2, dim=1) # l2-normalize
@@ -118,8 +118,14 @@ def train(config: AttributeHashmap):
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
 
-    recon_psnr_thr = 20
-    recon_good_enough = False
+    # NOTE: Previously I set recon_good_enough=False at the beginning,
+    # in order to train the UNet part first and only start training
+    # the ODE part once the reconstruction is good enough.
+    # Later I found this is not helpful.
+
+    # Train the UNet part first and only start training
+    # the ODE part once the reconstruction is good enough.
+    recon_psnr_thr, recon_good_enough = 20, False
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         if config.model == 'I2SBUNet':
@@ -142,22 +148,22 @@ def train(config: AttributeHashmap):
                 val_recon_psnr, val_pred_psnr, val_seg_dice_xT = \
                     val_epoch(config=config, device=device, val_set=val_set, model=model, epoch_idx=epoch_idx)
 
-            if val_recon_psnr > recon_psnr_thr:
-                recon_good_enough = True
+        if val_recon_psnr > recon_psnr_thr:
+            recon_good_enough = True
 
-            if val_pred_psnr > best_val_psnr:
-                best_val_psnr = val_pred_psnr
-                model.save_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'))
-                log('%s: Model weights successfully saved for best pred PSNR.' % config.model,
-                    filepath=config.log_dir,
-                    to_console=False)
+        if val_pred_psnr > best_val_psnr:
+            best_val_psnr = val_pred_psnr
+            model.save_weights(config.model_save_path.replace('.pty', '_best_pred_psnr.pty'))
+            log('%s: Model weights successfully saved for best pred PSNR.' % config.model,
+                filepath=config.log_dir,
+                to_console=False)
 
-            if val_seg_dice_xT > best_val_dice:
-                best_val_dice = val_seg_dice_xT
-                model.save_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'))
-                log('%s: Model weights successfully saved for best dice xT.' % config.model,
-                    filepath=config.log_dir,
-                    to_console=False)
+        if val_seg_dice_xT > best_val_dice:
+            best_val_dice = val_seg_dice_xT
+            model.save_weights(config.model_save_path.replace('.pty', '_best_seg_dice.pty'))
+            log('%s: Model weights successfully saved for best dice xT.' % config.model,
+                filepath=config.log_dir,
+                to_console=False)
 
     return
 
@@ -225,12 +231,13 @@ def train_epoch(config: AttributeHashmap,
             latent_start = vision_encoder.embed(x_start)
             latent_end_recon = vision_encoder.embed(x_end_recon)
             latent_end = vision_encoder.embed(x_end)
-            latent_loss = \
-                1/2 * (1 - torch.nn.functional.cosine_similarity(latent_start_recon, latent_start, dim=1).mean()) + \
-                1/2 * (1 - torch.nn.functional.cosine_similarity(latent_end_recon, latent_end, dim=1).mean())
+            # latent_loss = 1/2 * (
+            #     - torch.nn.functional.cosine_similarity(latent_start_recon, latent_start, dim=1).mean() \
+            #     - torch.nn.functional.cosine_similarity(latent_end_recon, latent_end, dim=1).mean())
+            latent_loss = neg_cos_sim(latent_start_recon, latent_start)/2 + neg_cos_sim(latent_end_recon, latent_end)/2
 
         if config.coeff_contrastive > 0:
-            z1, z2 = model.simsiam_project(x_start_noisy), model.simsiam_project(x_end_noisy)
+            z1, z2 = model.simsiam_project(x_start), model.simsiam_project(x_end)
             p1, p2 = model.simsiam_predict(z1), model.simsiam_predict(z2)
             contrastive_loss = neg_cos_sim(p1, z2)/2 + neg_cos_sim(p2, z1)/2
 
@@ -253,7 +260,7 @@ def train_epoch(config: AttributeHashmap,
         if train_time_dependent:
             assert torch.diff(t_list).item() > 0
 
-            smoothness_loss, latent_loss = 0, 0
+            latent_loss, smoothness_loss = 0, 0
 
             if config.coeff_smoothness > 0:
                 # Regularize on ODE trajectory smoothness via vector field Lipschitz continuity.
@@ -265,7 +272,8 @@ def train_epoch(config: AttributeHashmap,
                 # Regularize on latent embedding of image.
                 latent_end_pred = vision_encoder.embed(x_end_pred)
                 latent_end = vision_encoder.embed(x_end)
-                latent_loss = 1/2 * (1 - torch.nn.functional.cosine_similarity(latent_end_pred, latent_end, dim=1).mean())
+                # latent_loss = - torch.nn.functional.cosine_similarity(latent_end_pred, latent_end, dim=1).mean()
+                latent_loss = neg_cos_sim(latent_end_pred, latent_end)
 
             if config.no_l2:
                 loss_pred = config.coeff_smoothness * smoothness_loss + config.coeff_latent * latent_loss

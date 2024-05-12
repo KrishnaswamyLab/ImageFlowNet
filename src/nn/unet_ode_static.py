@@ -96,7 +96,7 @@ class StaticODEUNet(BaseNetwork):
         self.ode_list.to(self.device)
 
         if self.contrastive:
-            pred_dim = 512
+            pred_dim = 256
             self.projector = torch.nn.Sequential(
                 torch.nn.Linear(h_dummy_bottleneck.shape[1] *
                                 h_dummy_bottleneck.shape[2] *
@@ -202,8 +202,8 @@ class StaticODEUNet(BaseNetwork):
         return z
 
     def simsiam_predict(self, z: torch.Tensor):
-        z = self.predictor(z)
-        return z
+        p = self.predictor(z)
+        return p
 
     @torch.no_grad()
     def return_embeddings(self, x: torch.Tensor, t: torch.Tensor):
