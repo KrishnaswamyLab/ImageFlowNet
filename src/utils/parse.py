@@ -26,13 +26,14 @@ def parse_settings(config: AttributeHashmap, segmentor: bool = False,
         config.model_save_path = config.segmentor_ckpt
 
     else:
-        setting_str = '%s_%s_%ssmoothness-%.3f_latent-%.3f_contrastive-%.3f_seed_%s' % (
+        setting_str = '%s_%s_%ssmoothness-%.3f_latent-%.3f_contrastive-%.3f_invariance-%.3f_seed_%s' % (
             config.dataset_name,
             config.model,
             'NoL2_' if config.no_l2 else '',
             config.coeff_smoothness,
             config.coeff_latent,
             config.coeff_contrastive,
+            config.coeff_invariance,
             config.random_seed,
         )
 

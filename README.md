@@ -106,6 +106,7 @@ python 04_unpack_retina_UCSF.py
 
 cd ../../comparison/style_manifold_extrapolation/stylegan2-ada-pytorch
 python train.py --outdir=../training-runs --data='../../../data/retina_ucsf/UCSF_images_final_unpacked_256x256/' --gpus=1
+
 ```
 
 ## Dependencies
@@ -133,6 +134,9 @@ python -m pip install torchsde
 python -m pip install phate
 python -m pip install psutil
 python -m pip install ninja
+
+# For 3D registration
+python -m pip install antspyx
 ```
 
 # Environment for stylegan2-ada

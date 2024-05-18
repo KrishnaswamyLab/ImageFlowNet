@@ -1,5 +1,6 @@
 '''
-Work in progress
+A longitudinal brain Glioblastoma dataset.
+"The LUMIERE dataset: Longitudinal Glioblastoma MRI with expert RANO evaluation"
 '''
 
 
@@ -13,17 +14,15 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
+root_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
+
 
 def normalize_image(image: np.array) -> np.array:
     '''
-    Normalize an image by z-score (zero mean, 0.5 variance), then clipped to [-1, 1].
+    Image already normalized on scan level.
+    Just transform to [-1, 1] and clipped to [-1, 1].
     '''
-    voxel_ndarray = image.copy()
-    voxel_ndarray = voxel_ndarray.flatten()
-    upper_bound = np.percentile(voxel_ndarray, 99.5)
-    lower_bound = np.percentile(voxel_ndarray, 00.5)
-    image = np.clip(image, lower_bound, upper_bound)
-    image = (image - image.mean()) / (max(2 * image.std(), 1e-8))
+    image = image / 255.0 * 2 - 1
     image = np.clip(image, -1.0, 1.0)
     return image
 
@@ -50,19 +49,19 @@ def add_channel_dim(array: np.array) -> np.array:
 
 def get_time(path: str) -> float:
     ''' Get the timestamp information from a path string. '''
-    time = os.path.basename(path).split('_')[2]
+    time = os.path.basename(path).replace('week_', '').split('-')[0].replace('.png', '')
     # Shall be 2 or 3 digits
     assert len(time) in [2, 3]
     time = float(time)
     return time
 
 
-class RetinaUCSFDataset(Dataset):
+class BrainGBMDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/retina_ucsf/',
-                 image_folder: str = 'UCSF_images_final_512x512/',
-                 target_dim: Tuple[int] = (512, 512)):
+                 base_path: str = root_dir + '/data/brain_LUMIERE/',
+                 image_folder: str = 'LUMIERE_images_final_256x256/',
+                 target_dim: Tuple[int] = (256, 256)):
         '''
         The special thing here is that different patients may have different number of visits.
         - If a patient has fewer than 2 visits, we ignore the patient.
@@ -72,68 +71,92 @@ class RetinaUCSFDataset(Dataset):
         NOTE: since different patients may have different number of visits, the returned array will
         not necessarily be of the same shape. Due to the concatenation requirements, we can only
         set batch size to 1 in the downstream Dataloader.
+
+        NOTE: This dataset is structured like this:
+        LUMIERE_images_final_256x256
+        -- Patient-XX
+            -- slice_YY
+                -- week_ZZ.png
+
+        LUMIERE_masks_final_256x256
+        -- Patient-XX
+            -- slice_YY
+                -- week_ZZ_GBM_mask.png
+
+        So we will organize outputs on the unit of slices.
+        Each slice is essentially treated as a separate trajectory.
+        But importantly, data partitioning is done on the unit of patients.
         '''
         super().__init__()
 
         self.target_dim = target_dim
-        self.all_image_folders = sorted(glob('%s/%s/*/' %
-                                        (base_path, image_folder)))
+        self.all_patient_folders = sorted(glob('%s/%s/*/' % (base_path, image_folder)))
+        self.all_patient_ids = [os.path.basename(item.rstrip('/')) for item in self.all_patient_folders]
+        self.patient_id_to_slice_id = []  # maps the patient id to a list of corresponding slice ids.
 
-        self.image_by_patient = []
+        self.image_by_slice = []
 
         self.max_t = 0
-        for folder in self.all_image_folders:
-            paths = sorted(glob('%s/*.png' % (folder)))
-            if len(paths) >= 2:
-                self.image_by_patient.append(paths)
-            for p in paths:
-                self.max_t = max(self.max_t, get_time(p))
+
+        curr_slice_idx = 0
+        for folder in self.all_patient_folders:
+
+            num_slices_curr_patient = 0
+            slice_list = sorted(glob('%s/slice*/' % (folder)))
+            for curr_slice in slice_list:
+                paths = sorted(glob('%s/week*.png' % curr_slice))
+                if len(paths) >= 2:
+                    self.image_by_slice.append(paths)
+                    num_slices_curr_patient += 1
+                for p in paths:
+                    self.max_t = max(self.max_t, get_time(p))
+
+            self.patient_id_to_slice_id.append(np.arange(curr_slice_idx, curr_slice_idx + num_slices_curr_patient))
+            curr_slice_idx += num_slices_curr_patient
+
 
     def return_statistics(self) -> None:
-        print('max time (months):', self.max_t)
+        print('max time (weeks):', self.max_t)
 
-        # NOTE: "patient" in the context outside means "eye" here.
-        # The following printout is using a more precise terminology.
-        unique_eye_list = np.unique([os.path.basename(item.rstrip('/')) for item in self.all_image_folders])
-        unique_patient_list = np.unique([item.replace('_LE', '').replace('_RE', '') for item in unique_eye_list])
+        unique_patient_list = np.unique(self.all_patient_ids)
         print('Number of unique patients:', len(unique_patient_list))
-        print('Number of unique eyes:', len(unique_eye_list))
+        print('Number of unique slices:', len(self.image_by_slice))
 
         num_visit_map = {}
-        for item in self.image_by_patient:
+        for item in self.image_by_slice:
             num_visit = len(item)
             if num_visit not in num_visit_map.keys():
                 num_visit_map[num_visit] = 1
             else:
                 num_visit_map[num_visit] += 1
         for k, v in sorted(num_visit_map.items()):
-            print('%d visits: %d eyes.' % (k, v))
+            print('%d visits: %d slices.' % (k, v))
         return
 
     def __len__(self) -> int:
-        return len(self.image_by_patient)
+        return len(self.all_patient_ids)
 
     def num_image_channel(self) -> int:
         ''' Number of image channels. '''
         return 1
 
 
-class RetinaUCSFSubset(RetinaUCSFDataset):
+class BrainGBMSubset(BrainGBMDataset):
 
     def __init__(self,
-                 main_dataset: RetinaUCSFDataset = None,
+                 main_dataset: BrainGBMDataset = None,
                  subset_indices: List[int] = None,
                  return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'full_sequence'],
                  transforms = None,
                  transforms_aug = None):
         '''
-        A subset of RetinaUCSFDataset.
+        A subset of BrainGBMDataset.
 
-        In RetinaUCSFDataset, we carefully isolated the (variable number of) images from
+        In BrainGBMDataset, we carefully isolated the (variable number of) images from
         different patients, and in train/val/test split we split the data by
         patient rather than by image.
 
-        Now we have 3 instances of RetinaSubset, one for each train/val/test set.
+        Now we have 3 instances of BrainGBMSubset, one for each train/val/test set.
         In each set, we can safely unpack the images out.
         We want to organize the images such that each time `__getitem__` is called,
         it gets a pair of [x_start, x_end] and [t_start, t_end].
@@ -144,15 +167,16 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         self.return_format = return_format
         self.transforms = transforms
         self.transforms_aug = transforms_aug
-        # self.min_time_diff = min_time_diff
 
-        self.image_by_patient = [
-            main_dataset.image_by_patient[i] for i in subset_indices
-        ]
+        self.image_by_slice = []
+
+        for patient_id in subset_indices:
+            slice_ids = main_dataset.patient_id_to_slice_id[patient_id]
+            self.image_by_slice.extend([main_dataset.image_by_slice[i] for i in slice_ids])
 
         self.all_image_pairs = []
         self.all_subsequences = []
-        for image_list in self.image_by_patient:
+        for image_list in self.image_by_slice:
             pair_indices = list(itertools.combinations(np.arange(len(image_list)), r=2))
             for (idx1, idx2) in pair_indices:
                 self.all_image_pairs.append(
@@ -166,7 +190,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
     def __len__(self) -> int:
         if self.return_format == 'one_pair':
             # If we only return 1 pair of images per patient...
-            return len(self.image_by_patient)
+            return len(self.image_by_slice)
         elif self.return_format == 'all_pairs':
             # If we return all pairs of images per patient...
             return len(self.all_image_pairs)
@@ -175,32 +199,13 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             return len(self.all_subsequences)
         elif self.return_format == 'full_sequence':
             # If we return the full sequences of images per patient...
-            return len(self.image_by_patient)
+            return len(self.image_by_slice)
 
     def __getitem__(self, idx) -> Tuple[np.array, np.array]:
         if self.return_format == 'one_pair':
-            image_list = self.image_by_patient[idx]
+            image_list = self.image_by_slice[idx]
             pair_indices = list(
                 itertools.combinations(np.arange(len(image_list)), r=2))
-
-            # # Find valid time pairs that are far enough from each other.
-            # all_times = np.array([get_time(i) for i in image_list])
-            # time_diff = np.diff(all_times)
-            # if min(time_diff) >= self.min_time_diff:
-            #     # Select from the far-enough time pairs.
-            #     valid_locs = np.where(time_diff >= self.min_time_diff)[0]
-            #     selected_loc = np.random.choice(valid_locs)
-            #     time_pair_far_loc = [selected_loc, selected_loc + 1]
-            # else:
-            #     # Select the farthest time pair.
-            #     time_pair_far_loc = [0, -1]
-
-            # sampled_pair = [image_list[i] for i in time_pair_far_loc]
-
-            # images = np.array([
-            #     load_image(p, target_dim=self.target_dim, normalize=False) for p in sampled_pair
-            # ])
-            # timestamps = np.array([get_time(p) for p in sampled_pair])
 
             sampled_pair = [
                 image_list[i]
@@ -226,7 +231,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             timestamps = np.array([get_time(img) for img in queried_sequence])
 
         elif self.return_format == 'full_sequence':
-            queried_sequence = self.image_by_patient[idx]
+            queried_sequence = self.image_by_slice[idx]
             images = np.array([
                 load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
             ])
@@ -235,7 +240,6 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         if self.return_format in ['one_pair', 'all_pairs']:
             assert len(images) == 2
             image1, image2 = images[0], images[1]
-
             if self.transforms is not None:
                 transformed = self.transforms(image=image1, image_other=image2)
                 image1 = transformed["image"]
@@ -261,7 +265,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         elif self.return_format in ['all_subsequences', 'full_sequence']:
             num_images = len(images)
             assert num_images >= 2
-            assert num_images < 10  # NOTE: see `additional_targets` in `transform`.
+            assert num_images < 20  # NOTE: see `additional_targets` in `transform`.
 
             # Unpack the subsequence.
             image_list = np.rollaxis(images, axis=0)
@@ -281,20 +285,20 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         return images, timestamps
 
 
-class RetinaUCSFSegDataset(Dataset):
+class BrainGBMSegDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/retina_ucsf/',
-                 image_folder: str = 'UCSF_images_final_512x512/',
-                 mask_folder: str = 'UCSF_masks_final_512x512/',
-                 target_dim: Tuple[int] = (512, 512)):
+                 base_path: str = root_dir + '/data/brain_LUMIERE/',
+                 image_folder: str = 'LUMIERE_images_final_256x256/',
+                 mask_folder: str = 'LUMIERE_masks_final_256x256/',
+                 target_dim: Tuple[int] = (256, 256)):
         '''
         This dataset is for segmentation.
         '''
         super().__init__()
 
         self.target_dim = target_dim
-        all_image_folders = sorted(glob('%s/%s/*/' % (base_path, image_folder)))
+        all_image_folders = sorted(glob('%s/%s/Patient-*/slice*/' % (base_path, image_folder)))
 
         self.image_by_patient = []
         self.mask_by_patient = []
@@ -302,8 +306,8 @@ class RetinaUCSFSegDataset(Dataset):
             image_paths = sorted(glob('%s/*.png' % im_folder))
             mask_paths = []
             for image_path_ in image_paths:
-                mask_path_ = '_'.join(image_path_.split('_')[:-1]).replace(
-                    image_folder, mask_folder) + '_GA_mask.png'
+                mask_path_ = image_path_.replace('.png', '').replace(
+                    image_folder, mask_folder) + '_GBM_mask.png'
                 assert os.path.isfile(mask_path_)
                 mask_paths.append(mask_path_)
             self.image_by_patient.append(image_paths)
@@ -317,14 +321,14 @@ class RetinaUCSFSegDataset(Dataset):
         return 1
 
 
-class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
+class BrainGBMSegSubset(BrainGBMSegDataset):
 
     def __init__(self,
-                 main_dataset: RetinaUCSFDataset = None,
+                 main_dataset: BrainGBMSegDataset = None,
                  subset_indices: List[int] = None,
                  transforms = None):
         '''
-        A subset of RetinaUCSFSegDataset.
+        A subset of BrainGBMSegDataset.
         '''
         super().__init__()
 
@@ -356,7 +360,7 @@ class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
             mask = transformed["mask"]
 
         image = normalize_image(image)
-        mask = mask > 128
+        mask = mask > 0
 
         image = add_channel_dim(image)
         mask = add_channel_dim(mask)
@@ -365,10 +369,5 @@ class RetinaUCSFSegSubset(RetinaUCSFSegDataset):
 
 
 if __name__ == '__main__':
-    print('Before preprocessing...')
-    dataset = RetinaUCSFDataset(image_folder='UCSF_images_512x512')
-    dataset.return_statistics()
-
-    print('After preprocessing...')
-    dataset = RetinaUCSFDataset(image_folder='UCSF_images_final_512x512')
+    dataset = BrainGBMDataset()
     dataset.return_statistics()

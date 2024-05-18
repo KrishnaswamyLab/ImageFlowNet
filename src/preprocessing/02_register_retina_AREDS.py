@@ -139,7 +139,10 @@ def drawMatches(imageA, imageB, kpsA, kpsB, matches, status):
     return vis
 
 
-def register_and_save(predict_config, model, image_transformer, device, base_folder_source: str, base_folder_target: str):
+def register_and_save(predict_config, model, image_transformer, device,
+                      base_folder_source: str,
+                      base_folder_target: str,
+                      base_fg_mask_folder_target: str):
     source_image_folders = sorted(glob(base_folder_source + '/*'))
 
     success, total = 0, 0
@@ -155,10 +158,12 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
         image_height, image_width = None, None
         for _image_path in image_list:
             _image = cv2.imread(_image_path, cv2.IMREAD_COLOR)
+
             if image_height is not None:
                 assert image_height == _image.shape[0]
                 assert image_width == _image.shape[1]
             image_height, image_width = _image.shape[:2]
+
             # Use the green channel as model input
             _image = pre_processing(_image[:, :, 1])
             _image = (_image * 255).astype(np.uint8)
@@ -200,16 +205,25 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
         # First save the fixed image to the target folder.
         subject_folder_name = os.path.basename(folder)
         fixed_image_path = image_list[fixed_idx]
-        fixed_image_name = os.path.basename(fixed_image_path)
+        fixed_image_name = os.path.basename(fixed_image_path).replace('.jpg', '.png')
         fixed_image = cv2.imread(fixed_image_path, cv2.IMREAD_COLOR)
         os.makedirs(base_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
         cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + fixed_image_name, fixed_image)
+
+        # Create and save the foreground mask.
+        fixed_fg_mask_path = fixed_image_path.replace(base_folder_source, base_fg_mask_folder_target).replace('.jpg', '_foreground_mask.png')
+        fixed_fg_mask = np.uint8(np.ones_like(fixed_image) * 255)
+        if len(fixed_fg_mask.shape) == 3:
+            assert fixed_fg_mask.shape[-1] in [1, 3]
+            fixed_fg_mask = fixed_fg_mask[:, :, 0]
+        os.makedirs(base_fg_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+        cv2.imwrite(base_fg_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(fixed_fg_mask_path), fixed_fg_mask)
 
         # Now register every image in the series to that fixed image.
         for i, moving_image_path in enumerate(image_list):
             if i == fixed_idx:
                 continue
-            moving_image_name = os.path.basename(moving_image_path)
+            moving_image_name = os.path.basename(moving_image_path).replace('.jpg', '.png')
             moving_image = cv2.imread(moving_image_path, cv2.IMREAD_COLOR)
 
             goodMatch, status = match_kps(predict_config, descriptors[i], descriptors[fixed_idx])
@@ -219,15 +233,33 @@ def register_and_save(predict_config, model, image_transformer, device, base_fol
             if H_m is not None:
                 aligned_image = map_image(H_m, moving_image, fixed_image.shape)
                 cv2.imwrite(base_folder_target + '/' + subject_folder_name + '/' + moving_image_name, aligned_image)
+
+                subject_folder_name = moving_image_path.split('/')[-2]
+
+                moving_fg_mask_path = moving_image_path.replace(base_folder_source, base_fg_mask_folder_target).replace('.jpg', '_foreground_mask.png')
+                moving_fg_mask = np.uint8(np.ones_like(moving_image) * 255)
+                if len(moving_fg_mask.shape) == 3:
+                    assert moving_fg_mask.shape[-1] in [1, 3]
+                    moving_fg_mask = moving_fg_mask[:, :, 0]
+                aligned_fg_mask = map_image(H_m, moving_fg_mask, fixed_image.shape)
+                aligned_fg_mask = np.uint8((aligned_fg_mask > 128) * 255)
+                os.makedirs(base_fg_mask_folder_target + '/' + subject_folder_name + '/', exist_ok=True)
+                cv2.imwrite(base_fg_mask_folder_target + '/' + subject_folder_name + '/' + os.path.basename(moving_fg_mask_path), aligned_fg_mask)
+
                 success += 1
+
             else:
                 print("Failed to align the two images! %s and %s" % (fixed_image_path, moving_image_path))
+
             total += 1
 
     print('Registration success rate: (%.2f%%) %d/%d' % (success/total*100, success, total))
 
 
-def register_longitudinal(predict_config, base_folder_source: str, base_folder_target: str):
+def register_longitudinal(predict_config,
+                          base_folder_source: str,
+                          base_folder_target: str,
+                          base_fg_mask_folder_target: str):
     '''
     Register the longitudinal images.
 
@@ -255,7 +287,8 @@ def register_longitudinal(predict_config, base_folder_source: str, base_folder_t
                       image_transformer=image_transformer,
                       device=device,
                       base_folder_source=base_folder_source,
-                      base_folder_target=base_folder_target)
+                      base_folder_target=base_folder_target,
+                      base_fg_mask_folder_target=base_fg_mask_folder_target)
 
 
 if __name__ == '__main__':
@@ -272,7 +305,9 @@ if __name__ == '__main__':
 
     base_folder_source = '../../data/retina_areds/AREDS_2014_images_512x512/'
     base_folder_target = '../../data/retina_areds/AREDS_2014_images_aligned_512x512/'
+    base_fg_mask_folder_target = '../../data/retina_areds/AREDS_2014_FG_masks_aligned_512x512/'
 
     register_longitudinal(predict_config=config,
                           base_folder_source=base_folder_source,
-                          base_folder_target=base_folder_target)
+                          base_folder_target=base_folder_target,
+                          base_fg_mask_folder_target=base_fg_mask_folder_target)

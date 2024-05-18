@@ -2,29 +2,34 @@ from data_utils.extend import ExtendedDataset
 from data_utils.split import split_indices
 from datasets.retina_areds import RetinaAREDSDataset, RetinaAREDSSubset
 from datasets.retina_ucsf import RetinaUCSFDataset, RetinaUCSFSubset, RetinaUCSFSegDataset, RetinaUCSFSegSubset
+from datasets.brain_ms import BrainMSDataset, BrainMSSubset, BrainMSSegDataset, BrainMSSegSubset, brain_MS_split
+from datasets.brain_gbm import BrainGBMDataset, BrainGBMSubset, BrainGBMSegDataset, BrainGBMSegSubset
 from datasets.synthetic import SyntheticDataset, SyntheticSubset
 from torch.utils.data import DataLoader
 from utils.attribute_hashmap import AttributeHashmap
 
 
-def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, None]):
+def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, None, None]):
     '''
     Prepare the dataset for predicting one future timepoint from one earlier timepoint.
     '''
 
     # Read dataset.
     if config.dataset_name == 'retina_areds':
-        dataset = RetinaAREDSDataset(base_path=config.dataset_path,
-                                     image_folder=config.image_folder,
-                                     eye_mask_folder=config.eye_mask_folder,
-                                     target_dim=config.target_dim)
+        dataset = RetinaAREDSDataset(eye_mask_folder=config.eye_mask_folder)
         Subset = RetinaAREDSSubset
 
     elif config.dataset_name == 'retina_ucsf':
-        dataset = RetinaUCSFDataset(base_path=config.dataset_path,
-                                    image_folder=config.image_folder,
-                                    target_dim=config.target_dim)
+        dataset = RetinaUCSFDataset(target_dim=config.target_dim)
         Subset = RetinaUCSFSubset
+
+    elif config.dataset_name == 'brain_ms':
+        dataset = BrainMSDataset(target_dim=config.target_dim)
+        Subset = BrainMSSubset
+
+    elif config.dataset_name == 'brain_gbm':
+        dataset = BrainGBMDataset(target_dim=config.target_dim)
+        Subset = BrainGBMSubset
 
     elif config.dataset_name == 'synthetic':
         dataset = SyntheticDataset(base_path=config.dataset_path,
@@ -43,11 +48,17 @@ def prepare_dataset(config: AttributeHashmap, transforms_list = [None, None, Non
     train_indices, val_indices, test_indices = \
         split_indices(indices=indices, splits=ratios, random_seed=1)
 
-    transforms_train, transforms_val, transforms_test = transforms_list
+    transforms_aug = None
+    if len(transforms_list) == 4:
+        transforms_train, transforms_val, transforms_test, transforms_aug = transforms_list
+    else:
+        transforms_train, transforms_val, transforms_test = transforms_list
+
     train_set = Subset(main_dataset=dataset,
                        subset_indices=train_indices,
                        return_format='one_pair',
-                       transforms=transforms_train)
+                       transforms=transforms_train,
+                       transforms_aug=transforms_aug)
     val_set = Subset(main_dataset=dataset,
                      subset_indices=val_indices,
                      return_format='all_pairs',
@@ -86,10 +97,16 @@ def prepare_dataset_npt(config: AttributeHashmap, transforms_list = [None, None,
 
     # Read dataset.
     if config.dataset_name == 'retina_ucsf':
-        dataset = RetinaUCSFDataset(base_path=config.dataset_path,
-                                    image_folder=config.image_folder,
-                                    target_dim=config.target_dim)
+        dataset = RetinaUCSFDataset(target_dim=config.target_dim)
         Subset = RetinaUCSFSubset
+
+    elif config.dataset_name == 'brain_ms':
+        dataset = BrainMSDataset(target_dim=config.target_dim)
+        Subset = BrainMSSubset
+
+    elif config.dataset_name == 'brain_gbm':
+        dataset = BrainGBMDataset(target_dim=config.target_dim)
+        Subset = BrainGBMSubset
 
     else:
         raise ValueError(
@@ -145,10 +162,16 @@ def prepare_dataset_full_sequence(config: AttributeHashmap, transforms_list = [N
 
     # Read dataset.
     if config.dataset_name == 'retina_ucsf':
-        dataset = RetinaUCSFDataset(base_path=config.dataset_path,
-                                    image_folder=config.image_folder,
-                                    target_dim=config.target_dim)
+        dataset = RetinaUCSFDataset(target_dim=config.target_dim)
         Subset = RetinaUCSFSubset
+
+    elif config.dataset_name == 'brain_ms':
+        dataset = BrainMSDataset(target_dim=config.target_dim)
+        Subset = BrainMSSubset
+
+    elif config.dataset_name == 'brain_gbm':
+        dataset = BrainGBMDataset(target_dim=config.target_dim)
+        Subset = BrainGBMSubset
 
     else:
         raise ValueError(
@@ -174,11 +197,16 @@ def prepare_dataset_full_sequence(config: AttributeHashmap, transforms_list = [N
 def prepare_dataset_segmentation(config: AttributeHashmap, transforms_list = [None, None, None]):
     # Read dataset.
     if config.dataset_name == 'retina_ucsf':
-        dataset = RetinaUCSFSegDataset(base_path=config.dataset_path,
-                                       image_folder=config.image_folder,
-                                       mask_folder=config.mask_folder,
-                                       target_dim=config.target_dim)
+        dataset = RetinaUCSFSegDataset(target_dim=config.target_dim)
         Subset = RetinaUCSFSegSubset
+
+    elif config.dataset_name == 'brain_ms':
+        dataset = BrainMSSegDataset(target_dim=config.target_dim)
+        Subset = BrainMSSegSubset
+
+    elif config.dataset_name == 'brain_gbm':
+        dataset = BrainGBMSegDataset(target_dim=config.target_dim)
+        Subset = BrainGBMSegSubset
 
     else:
         raise ValueError(
@@ -191,21 +219,24 @@ def prepare_dataset_segmentation(config: AttributeHashmap, transforms_list = [No
     train_indices, val_indices, test_indices = \
         split_indices(indices=indices, splits=ratios, random_seed=1)
 
+    if config.dataset_name == 'brain_ms':
+        train_indices, val_indices, test_indices = brain_MS_split()
+
     transforms_train, transforms_val, transforms_test = transforms_list
     train_set = Subset(main_dataset=dataset,
                        subset_indices=train_indices,
                        transforms=transforms_train)
     val_set = Subset(main_dataset=dataset,
                      subset_indices=val_indices,
-                       transforms=transforms_val)
+                     transforms=transforms_val)
     test_set = Subset(main_dataset=dataset,
                       subset_indices=test_indices,
-                       transforms=transforms_test)
+                      transforms=transforms_test)
 
     min_sample_per_epoch = 5
     if 'max_training_samples' in config.keys():
         min_sample_per_epoch = config.max_training_samples
-    desired_len = max(len(train_set), min_sample_per_epoch)
+    desired_len = max(len(train_set) / config.batch_size, min_sample_per_epoch)
     train_set = ExtendedDataset(dataset=train_set, desired_len=desired_len)
 
     train_set = DataLoader(dataset=train_set,

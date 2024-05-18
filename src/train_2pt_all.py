@@ -43,7 +43,7 @@ from i2sb.diffusion import Diffusion
 from i2sb.runner import make_beta_schedule
 
 
-def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Tensor:
+def add_random_noise(img: torch.Tensor, max_intensity: float = 0.2) -> torch.Tensor:
     intensity = max_intensity * torch.rand(1).to(img.device)
     noise = intensity * torch.randn_like(img)
     return img + noise
@@ -71,7 +71,18 @@ def train(config: AttributeHashmap):
             'image_other': 'image',
         }
     )
-    transforms_list = [train_transform, None, None]
+    if config.coeff_invariance > 0:
+        aug_transform = A.Compose(
+            [
+                A.HorizontalFlip(p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=60, p=1.0),
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
+            ],
+        )
+        transforms_list = [train_transform, None, None, aug_transform]
+    else:
+        transforms_list = [train_transform, None, None]
+
     train_set, val_set, test_set, num_image_channel, max_t = \
         prepare_dataset(config=config, transforms_list=transforms_list)
 
@@ -93,7 +104,7 @@ def train(config: AttributeHashmap):
                                         ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
-                                        contrastive=config.coeff_contrastive > 0,
+                                        contrastive=config.coeff_contrastive + config.coeff_invariance > 0,
                                         **kwargs)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
@@ -118,14 +129,12 @@ def train(config: AttributeHashmap):
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
 
-    # NOTE: Previously I set recon_good_enough=False at the beginning,
-    # in order to train the UNet part first and only start training
-    # the ODE part once the reconstruction is good enough.
-    # Later I found this is not helpful.
-
     # Train the UNet part first and only start training
     # the ODE part once the reconstruction is good enough.
-    recon_psnr_thr, recon_good_enough = 20, False
+    recon_psnr_thr, recon_good_enough = 25, False
+
+    # Only relevant to ODE
+    config.t_multiplier = config.ode_max_t / max_t
 
     for epoch_idx in tqdm(range(config.max_epochs)):
         if config.model == 'I2SBUNet':
@@ -195,12 +204,11 @@ def train_epoch(config: AttributeHashmap,
             filepath=config.log_dir,
             to_console=False)
 
-    plot_freq = int(len(train_set) // config.n_plot_per_epoch)
+    plot_freq = int(min(config.max_training_samples, len(train_set)) // config.n_plot_per_epoch)
     for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
-        if 'max_training_samples' in config:
-            if iter_idx > config.max_training_samples:
-                break
+        if iter_idx > config.max_training_samples:
+            break
 
         shall_plot = iter_idx % plot_freq == 0
 
@@ -211,10 +219,15 @@ def train_epoch(config: AttributeHashmap,
 
         # images: [1, 2, C, H, W], containing [x_start, x_end]
         # timestamps: [1, 2], containing [t_start, t_end]
-        assert images.shape[1] == 2
+        assert images.shape[1] in [2, 3] # maybe additional x_start_aug
         assert timestamps.shape[1] == 2
 
-        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_list, t_list = convert_variables(images, timestamps, device)
+        if len(x_list) == 3:
+            x_start, x_end, x_start_aug = x_list
+        else:
+            x_start, x_end = x_list
+
         x_start_noisy, x_end_noisy = add_random_noise(x_start), add_random_noise(x_end)
 
         ################### Recon Loss to update Encoder/Decoder ##################
@@ -224,7 +237,7 @@ def train_epoch(config: AttributeHashmap,
         x_start_recon = model(x=x_start_noisy, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end_noisy, t=torch.zeros(1).to(device))
 
-        latent_loss, contrastive_loss = 0, 0
+        latent_loss, contrastive_loss, invariance_loss = 0, 0, 0
         if config.coeff_latent > 0:
             # Regularize on latent embedding of image.
             latent_start_recon = vision_encoder.embed(x_start_recon)
@@ -241,8 +254,15 @@ def train_epoch(config: AttributeHashmap,
             p1, p2 = model.simsiam_predict(z1), model.simsiam_predict(z2)
             contrastive_loss = neg_cos_sim(p1, z2)/2 + neg_cos_sim(p2, z1)/2
 
-        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon) + \
-            config.coeff_latent * latent_loss + config.coeff_contrastive * contrastive_loss
+        if config.coeff_invariance > 0:
+            z1, z2 = model.simsiam_project(x_start), model.simsiam_project(x_start_aug)
+            p1, p2 = model.simsiam_predict(z1), model.simsiam_predict(z2)
+            invariance_loss = neg_cos_sim(p1, z2)/2 + neg_cos_sim(p2, z1)/2
+
+        loss_recon = mse_loss(x_start, x_start_recon) + mse_loss(x_end, x_end_recon) \
+            + config.coeff_latent * latent_loss \
+            + config.coeff_contrastive * contrastive_loss \
+            + config.coeff_invariance * invariance_loss
 
         train_loss_recon += loss_recon.item()
 
@@ -272,7 +292,6 @@ def train_epoch(config: AttributeHashmap,
                 # Regularize on latent embedding of image.
                 latent_end_pred = vision_encoder.embed(x_end_pred)
                 latent_end = vision_encoder.embed(x_end)
-                # latent_loss = - torch.nn.functional.cosine_similarity(latent_end_pred, latent_end, dim=1).mean()
                 latent_loss = neg_cos_sim(latent_end_pred, latent_end)
 
             if config.no_l2:
@@ -340,7 +359,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
                      scheduler: torch.optim.lr_scheduler._LRScheduler,
                      mse_loss: torch.nn.Module,
                      backprop_freq: int,
-                     max_t: int):
+                     max_t: float):
     '''
     Training epoch for I2SB: Image-to-Image Schrodinger Bridge.
     '''
@@ -349,12 +368,11 @@ def train_epoch_I2SB(config: AttributeHashmap,
     model.train()
     optimizer.zero_grad()
 
-    plot_freq = int(len(train_set) // config.n_plot_per_epoch)
+    plot_freq = int(min(config.max_training_samples, len(train_set)) // config.n_plot_per_epoch)
     for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
-        if 'max_training_samples' in config:
-            if iter_idx > config.max_training_samples:
-                break
+        if iter_idx > config.max_training_samples:
+            break
 
         shall_plot = iter_idx % plot_freq == 0
 
@@ -368,11 +386,13 @@ def train_epoch_I2SB(config: AttributeHashmap,
         assert images.shape[1] == 2
         assert timestamps.shape[1] == 2
 
-        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_list, t_list = convert_variables(images, timestamps, device)
+        x_start, x_end = x_list
         x_start_noisy, x_end_noisy = add_random_noise(x_start), add_random_noise(x_end)
 
         delta_t_normalized = torch.diff(t_list) / max_t
-        step = torch.randint(0, int(config.diffusion_interval * delta_t_normalized), (x_end.shape[0],))
+        step_max = max(int(config.diffusion_interval * delta_t_normalized), 2)
+        step = torch.randint(0, step_max, (x_end.shape[0],))
         xt = model.diffusion.q_sample(step, x_end, x_start)
         x_interp_pseudo_gt = compute_diffusion_label(model.diffusion, step, x_end, xt)
         diffusion_time = model.step_to_t[step]
@@ -399,7 +419,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
         _, x_end_recon = model.ddpm_sampling(x_start=x_end_noisy, steps=np.int16(np.linspace(0, 1, 2)).tolist())
 
         assert torch.diff(t_list).item() > 0
-        step_max = int(config.diffusion_interval * delta_t_normalized)
+        step_max = max(int(config.diffusion_interval * delta_t_normalized), 2)
         _, x_end_pred = model.ddpm_sampling(x_start=x_start_noisy,
                                             steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
@@ -454,29 +474,37 @@ def val_epoch(config: AttributeHashmap,
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
     val_seg_dice_xT, val_seg_dice_gt = 0, 0
 
-    segmentor = torch.nn.Sequential(
-        monai.networks.nets.DynUNet(
-            spatial_dims=2,
-            in_channels=1,
-            out_channels=1,
-            kernel_size=[5, 5, 5, 5],
-            filters=[16, 32, 64, 128],
-            strides=[1, 1, 1, 1],
-            upsample_kernel_size=[1, 1, 1, 1]),
-        torch.nn.Sigmoid()).to(device)
-    segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
-    segmentor.eval()
+    if os.path.isfile(config.segmentor_ckpt):
+        segmentor = torch.nn.Sequential(
+            monai.networks.nets.DynUNet(
+                spatial_dims=2,
+                in_channels=1,
+                out_channels=1,
+                kernel_size=[5, 5, 5, 5],
+                filters=[16, 32, 64, 128],
+                strides=[1, 1, 1, 1],
+                upsample_kernel_size=[1, 1, 1, 1]),
+            torch.nn.Sigmoid()).to(device)
+        segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+        segmentor.eval()
+    else:
+        print('Using an identity mapping as a placeholder for segmentor.')
+        segmentor = torch.nn.Identity()
 
-    plot_freq = int(len(val_set) // config.n_plot_per_epoch)
+    plot_freq = int(min(config.max_validation_samples, len(val_set)) // config.n_plot_per_epoch)
     for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
         shall_plot = iter_idx % plot_freq == 0
+
+        if iter_idx > config.max_validation_samples:
+            break
 
         assert images.shape[1] == 2
         assert timestamps.shape[1] == 2
 
         # images: [1, 2, C, H, W], containing [x_start, x_end]
         # timestamps: [1, 2], containing [t_start, t_end]
-        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_list, t_list = convert_variables(images, timestamps, device)
+        x_start, x_end = x_list
 
         x_start_recon = model(x=x_start, t=torch.zeros(1).to(device))
         x_end_recon = model(x=x_end, t=torch.zeros(1).to(device))
@@ -529,33 +557,41 @@ def val_epoch_I2SB(config: AttributeHashmap,
                    val_set: Dataset,
                    model: torch.nn.Module,
                    epoch_idx: int,
-                   max_t: int):
+                   max_t: float):
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim = 0, 0, 0, 0
     val_seg_dice_xT, val_seg_dice_gt = 0, 0
 
-    segmentor = torch.nn.Sequential(
-        monai.networks.nets.DynUNet(
-            spatial_dims=2,
-            in_channels=1,
-            out_channels=1,
-            kernel_size=[5, 5, 5, 5],
-            filters=[16, 32, 64, 128],
-            strides=[1, 1, 1, 1],
-            upsample_kernel_size=[1, 1, 1, 1]),
-        torch.nn.Sigmoid()).to(device)
-    segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
-    segmentor.eval()
+    if os.path.isfile(config.segmentor_ckpt):
+        segmentor = torch.nn.Sequential(
+            monai.networks.nets.DynUNet(
+                spatial_dims=2,
+                in_channels=1,
+                out_channels=1,
+                kernel_size=[5, 5, 5, 5],
+                filters=[16, 32, 64, 128],
+                strides=[1, 1, 1, 1],
+                upsample_kernel_size=[1, 1, 1, 1]),
+            torch.nn.Sigmoid()).to(device)
+        segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+        segmentor.eval()
+    else:
+        print('Using an identity mapping as a placeholder for segmentor.')
+        segmentor = torch.nn.Identity()
 
-    plot_freq = int(len(val_set) // config.n_plot_per_epoch)
+    plot_freq = int(min(config.max_validation_samples, len(val_set)) // config.n_plot_per_epoch)
     for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
         shall_plot = iter_idx % plot_freq == 0
+
+        if iter_idx > config.max_validation_samples:
+            break
 
         assert images.shape[1] == 2
         assert timestamps.shape[1] == 2
 
         # images: [1, 2, C, H, W], containing [x_start, x_end]
         # timestamps: [1, 2], containing [t_start, t_end]
-        x_start, x_end, t_list = convert_variables(images, timestamps, device)
+        x_list, t_list = convert_variables(images, timestamps, device)
+        x_start, x_end = x_list
 
         # Almost reconstruction (step = [0, 1]).
         _, x_start_recon = model.ddpm_sampling(x_start=x_start, steps=np.int16(np.linspace(0, 1, 2)).tolist())
@@ -563,7 +599,7 @@ def val_epoch_I2SB(config: AttributeHashmap,
 
         assert torch.diff(t_list).item() > 0
         delta_t_normalized = torch.diff(t_list) / max_t
-        step_max = int(config.diffusion_interval * delta_t_normalized)
+        step_max = max(int(config.diffusion_interval * delta_t_normalized), 2)
         _, x_end_pred = model.ddpm_sampling(x_start=x_start,
                                             steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
@@ -634,25 +670,32 @@ def test(config: AttributeHashmap):
                                         ode_location=config.ode_location,
                                         in_channels=num_image_channel,
                                         out_channels=num_image_channel,
-                                        contrastive=config.coeff_contrastive > 0,
+                                        contrastive=config.coeff_contrastive + config.coeff_invariance > 0,
                                         **kwargs)
     except:
         raise ValueError('`config.model`: %s not supported.' % config.model)
 
     model.to(device)
 
-    segmentor = torch.nn.Sequential(
-        monai.networks.nets.DynUNet(
-            spatial_dims=2,
-            in_channels=1,
-            out_channels=1,
-            kernel_size=[5, 5, 5, 5],
-            filters=[16, 32, 64, 128],
-            strides=[1, 1, 1, 1],
-            upsample_kernel_size=[1, 1, 1, 1]),
-        torch.nn.Sigmoid()).to(device)
-    segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
-    segmentor.eval()
+    if os.path.isfile(config.segmentor_ckpt):
+        segmentor = torch.nn.Sequential(
+            monai.networks.nets.DynUNet(
+                spatial_dims=2,
+                in_channels=1,
+                out_channels=1,
+                kernel_size=[5, 5, 5, 5],
+                filters=[16, 32, 64, 128],
+                strides=[1, 1, 1, 1],
+                upsample_kernel_size=[1, 1, 1, 1]),
+            torch.nn.Sigmoid()).to(device)
+        segmentor.load_state_dict(torch.load(config.segmentor_ckpt, map_location=device))
+        segmentor.eval()
+    else:
+        print('Using an identity mapping as a placeholder for segmentor.')
+        segmentor = torch.nn.Identity()
+
+    # Only relevant to ODE
+    config.t_multiplier = config.ode_max_t / max_t
 
     for best_type in ['pred_psnr', 'seg_dice']:
         if best_type == 'pred_psnr':
@@ -680,13 +723,18 @@ def test(config: AttributeHashmap):
         test_seg_dice, test_seg_hd, test_residual_mae, test_residual_mse = [], [], [], []
         test_seg_dice_gt = []
         for iter_idx, (images, timestamps) in enumerate(tqdm(test_set)):
-            assert images.shape[1] == 2
-            assert timestamps.shape[1] == 2
+
+            if iter_idx > config.max_testing_samples:
+                break
 
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
 
-            x_start, x_end, t_list = convert_variables(images, timestamps, device)
+            assert images.shape[1] == 2
+            assert timestamps.shape[1] == 2
+
+            x_list, t_list = convert_variables(images, timestamps, device)
+            x_start, x_end = x_list
 
             if config.model == 'I2SBUNet':
                 # Almost reconstruction (step = [0, 1]).
@@ -695,7 +743,7 @@ def test(config: AttributeHashmap):
 
                 assert torch.diff(t_list).item() > 0
                 delta_t_normalized = torch.diff(t_list) / max_t
-                step_max = int(config.diffusion_interval * delta_t_normalized)
+                step_max = max(int(config.diffusion_interval * delta_t_normalized), 2)
                 _, x_end_pred = model.ddpm_sampling(x_start=x_start,
                                                     steps=np.int16(np.linspace(0, step_max - 1, step_max)).tolist())
 
@@ -857,9 +905,13 @@ def convert_variables(images: torch.Tensor,
     '''
     x_start = images[:, 0, ...].float().to(device)
     x_end = images[:, 1, ...].float().to(device)
+    if images.shape[1] == 3:
+        x_start_aug = images[:, 2, ...].float().to(device)
     t_list = timestamps[0].float().to(device)
-    return x_start, x_end, t_list
-
+    if images.shape[1] == 3:
+        return [x_start, x_end, x_start_aug], t_list
+    else:
+        return [x_start, x_end], t_list
 
 def numpy_variables(*tensors: torch.Tensor) -> Tuple[np.array]:
     '''
@@ -998,9 +1050,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--dataset-name', default='retina_ucsf', type=str)
     parser.add_argument('--target-dim', default='(256, 256)', type=ast.literal_eval)
-    parser.add_argument('--image-folder', default='UCSF_images_final_512x512', type=str)
+    # parser.add_argument('--dataset-path', default='$ROOT/data/retina_ucsf/', type=str)
+    # parser.add_argument('--image-folder', default='UCSF_images_final_512x512', type=str)
     parser.add_argument('--output-save-folder', default='$ROOT/results/', type=str)
-    parser.add_argument('--dataset-path', default='$ROOT/data/retina_ucsf/', type=str)
     parser.add_argument('--segmentor-ckpt', default='$ROOT/checkpoints/segment_retinaUCSF_seed1.pty', type=str)
 
     parser.add_argument('--model', default='StaticODEUNet', type=str)
@@ -1008,20 +1060,24 @@ if __name__ == '__main__':
     parser.add_argument('--learning-rate', default=1e-4, type=float)
     parser.add_argument('--max-epochs', default=120, type=int)
     parser.add_argument('--batch-size', default=64, type=int)
-    parser.add_argument('--t-multiplier', default=0.2, type=float)  # only relevant to ODE
+    # parser.add_argument('--t-multiplier', default=0.2, type=float)   # only relevant to ODE
+    parser.add_argument('--ode-max-t', default=5.0, type=float)        # only relevant to ODE. Bigger is slower.
     parser.add_argument('--ode-location', default='all_connections', type=str)  # only relevant to ODE
-    parser.add_argument('--depth', default=5, type=int)             # only relevant to simple unet
-    parser.add_argument('--num-filters', default=64, type=int)      # only relevant to simple unet
-    parser.add_argument('--diffusion-interval', default=100, type=int)      # only relevant to I2SB
+    parser.add_argument('--depth', default=5, type=int)                # only relevant to simple unet
+    parser.add_argument('--num-filters', default=64, type=int)         # only relevant to simple unet
+    parser.add_argument('--diffusion-interval', default=100, type=int) # only relevant to I2SB
     parser.add_argument('--num-workers', default=8, type=int)
     parser.add_argument('--train-val-test-ratio', default='6:2:2', type=str)
     parser.add_argument('--max-training-samples', default=2048, type=int)
+    parser.add_argument('--max-validation-samples', default=256, type=int)
+    parser.add_argument('--max-testing-samples', default=5000, type=int)
     parser.add_argument('--n-plot-per-epoch', default=4, type=int)
 
     parser.add_argument('--no-l2', action='store_true')  # only relevant to ODE
     parser.add_argument('--coeff-smoothness', default=0, type=float)  # only relevant to ODE
     parser.add_argument('--coeff-latent', default=0, type=float)
     parser.add_argument('--coeff-contrastive', default=0, type=float)
+    parser.add_argument('--coeff-invariance', default=0, type=float)
     parser.add_argument('--pretrained-vision-model', default='convnext_tiny', type=str)
 
     args = vars(parser.parse_args())

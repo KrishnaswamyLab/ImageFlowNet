@@ -65,7 +65,11 @@ def train(config: AttributeHashmap):
         }
 
         model.train()
-        for _, (x_train, seg_true) in enumerate(tqdm(train_set)):
+        for iter_idx, (x_train, seg_true) in enumerate(tqdm(train_set)):
+            if 'max_training_samples' in config:
+                if iter_idx * config.batch_size > config.max_training_samples:
+                    break
+
             x_train = x_train.float().to(device)
             seg_pred = model(x_train)
             seg_pred = seg_pred.squeeze(1).float().to(device)
@@ -238,10 +242,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--dataset-name', default='retina_ucsf', type=str)
     parser.add_argument('--target-dim', default='(256, 256)', type=ast.literal_eval)
-    parser.add_argument('--image-folder', default='UCSF_images_final_512x512', type=str)
-    parser.add_argument('--mask-folder', default='UCSF_masks_final_512x512', type=str)
-    parser.add_argument('--dataset-path', default='$ROOT/data/retina_ucsf/', type=str)
-    parser.add_argument('--segmentor-ckpt', default='$ROOT/checkpoint_try2/segment_retinaUCSF_seed1.pty', type=str)
+    # parser.add_argument('--image-folder', default='UCSF_images_final_512x512', type=str)
+    # parser.add_argument('--mask-folder', default='UCSF_masks_final_512x512', type=str)
+    # parser.add_argument('--dataset-path', default='$ROOT/data/retina_ucsf/', type=str)
+    parser.add_argument('--segmentor-ckpt', default='$ROOT/checkpoints/segment_retinaUCSF_seed1.pty', type=str)
 
     parser.add_argument('--random-seed', default=1, type=int)
     parser.add_argument('--learning-rate', default=1e-3, type=float)

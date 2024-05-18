@@ -79,7 +79,8 @@ def obtain_embeddings(config: AttributeHashmap):
                                             depth=config.depth,
                                             ode_location=config.ode_location,
                                             in_channels=num_image_channel,
-                                            out_channels=num_image_channel)
+                                            out_channels=num_image_channel,
+                                            contrastive=config.coeff_contrastive + config.coeff_invariance > 0)
         except:
             raise ValueError('`config.model`: %s not supported.' % config.model)
 
@@ -146,16 +147,26 @@ def obtain_embeddings(config: AttributeHashmap):
 
     # Visualize them in 2 dimensions.
     fig = plt.figure(figsize=(14, 6))
+    plt.rcParams['font.family'] = 'serif'
     ax = fig.add_subplot(1, 2, 1)
+    ax.tick_params(axis='both', which='major', labelsize=14)
+    ax.tick_params(axis='both', which='minor', labelsize=14)
+    ax.set_xlabel('PHATE 1', fontsize=16)
+    ax.set_ylabel('PHATE 2', fontsize=16)
+
     phate_op = phate.PHATE(random_state=0,
                            n_jobs=1,
                            n_components=2,
-                        #    t=10,
                            verbose=False)
     data_phate = phate_op.fit_transform(embedding_list_by_connection[0])
-    ax.scatter(data_phate[:, 0], data_phate[:, 1], color='gray', alpha=0.2)
+    ax.scatter(data_phate[:, 0], data_phate[:, 1], color='firebrick', alpha=1.0)
+    ax.set_xticks([np.round(item, 2) for item in
+                   np.linspace(data_phate[:, 0].min(), data_phate[:, 0].max(), num=5)])
+    ax.set_yticks([np.round(item, 2) for item in
+                   np.linspace(data_phate[:, 1].min(), data_phate[:, 1].max(), num=5)])
 
     # Draw arrows connecting the trajectories.
+    # cmap = mpl.cm.viridis
     cmap = mpl.cm.winter
     norm = mpl.colors.Normalize(vmin=0, vmax=1)
     time_scaling_factor = np.max(time_arr) - np.min(time_arr)
@@ -174,17 +185,34 @@ def obtain_embeddings(config: AttributeHashmap):
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes('right', size='5%', pad=0.05)
+    cax.tick_params(axis='both', which='major', labelsize=14)
     fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation='vertical')
 
     # Visualize them in 3 dimensions.
     ax = fig.add_subplot(1, 2, 2, projection='3d')
+    ax.view_init(elev=30, azim=45, roll=0)
+    ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax.tick_params(axis='both', which='minor', labelsize=10)
+    ax.set_xlabel('PHATE 1', fontsize=14)
+    ax.set_ylabel('PHATE 2', fontsize=14)
+    ax.set_zlabel('PHATE 3', fontsize=14)
+
     phate_op = phate.PHATE(random_state=0,
                            n_jobs=1,
                            n_components=3,
-                        #    t=10,
                            verbose=False)
     data_phate = phate_op.fit_transform(embedding_list_by_connection[0])
-    ax.scatter(data_phate[:, 0], data_phate[:, 1], data_phate[:, 2], color='gray', alpha=0.2)
+    ax.scatter(data_phate[:, 0], data_phate[:, 1], data_phate[:, 2],
+               color='firebrick', s=8, alpha=1.0)
+    ax.set_xticks([np.round(item, 2) for item in
+                   np.linspace(data_phate[:, 0].min(), data_phate[:, 0].max(), num=5)])
+    ax.set_yticks([np.round(item, 2) for item in
+                   np.linspace(data_phate[:, 1].min(), data_phate[:, 1].max(), num=5)])
+    ax.set_zticks([np.round(item, 2) for item in
+                   np.linspace(data_phate[:, 2].min(), data_phate[:, 2].max(), num=5)])
 
     # Draw arrows connecting the trajectories.
     for subject_id in np.unique(subject_arr):
@@ -195,15 +223,14 @@ def obtain_embeddings(config: AttributeHashmap):
         assert all(t1 < t2 for t1, t2 in zip(subject_times[:-1], subject_times[1:]))
 
         for e1, e2, t2 in zip(subject_embeddings[:-1], subject_embeddings[1:], subject_times[1:]):
-            # ax.arrow(e1[0], e1[1], e1[2], e2[0]-e1[0], e2[1]-e1[1],
-            #          width=5e-5, head_length=2e-3, head_width=2e-3, fc='black',
-            #          ec=cmap(t2 / time_scaling_factor))
             a = Arrow3D([e1[0], e2[0]], [e1[1], e2[1]], [e1[2], e2[2]],
-                        lw=5e-1, mutation_scale=5, arrowstyle="-|>", color=cmap(t2 / time_scaling_factor))
+                        lw=2, mutation_scale=6, arrowstyle="-|>",
+                        color=cmap(t2 / time_scaling_factor),
+                        alpha=0.5)
             a.set_zorder(-1)
             ax.add_artist(a)
 
-    fig.savefig(figure_save_dir)
+    fig.savefig(figure_save_dir, dpi=300)
 
     return
 
