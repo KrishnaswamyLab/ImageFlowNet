@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
+root_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
+
 
 def normalize_image(image: np.array) -> np.array:
     '''
@@ -60,7 +62,7 @@ def get_time(path: str) -> float:
 class RetinaUCSFDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/retina_ucsf/',
+                 base_path: str = root_dir + '/data/retina_ucsf/',
                  image_folder: str = 'UCSF_images_final_512x512/',
                  target_dim: Tuple[int] = (512, 512)):
         '''
@@ -284,7 +286,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
 class RetinaUCSFSegDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/retina_ucsf/',
+                 base_path: str = root_dir + '/data/retina_ucsf/',
                  image_folder: str = 'UCSF_images_final_512x512/',
                  mask_folder: str = 'UCSF_masks_final_512x512/',
                  target_dim: Tuple[int] = (512, 512)):

@@ -43,7 +43,7 @@ from i2sb.diffusion import Diffusion
 from i2sb.runner import make_beta_schedule
 
 
-def add_random_noise(img: torch.Tensor, max_intensity: float = 0.2) -> torch.Tensor:
+def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Tensor:
     intensity = max_intensity * torch.rand(1).to(img.device)
     noise = intensity * torch.randn_like(img)
     return img + noise

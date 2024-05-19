@@ -3,16 +3,18 @@ from typing import Literal
 from glob import glob
 from typing import List, Tuple
 
+import os
 import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
+root_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
 
 
 class RetinaAREDSDataset(Dataset):
 
     def __init__(self,
-                 base_path: str = '../../data/retina_areds/',
+                 base_path: str = root_dir + '/data/retina_areds/',
                  image_folder: str = 'AREDS_2014_images_512x512/',
                  eye_mask_folder: str = None,
                  target_dim: Tuple[int] = (512, 512)):

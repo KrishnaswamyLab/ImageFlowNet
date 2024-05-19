@@ -61,7 +61,7 @@ class StaticSDEUNet(BaseNetwork):
             class_cond=False,
             use_checkpoint=False,
             attention_resolutions='32,16,8',
-            num_heads=4,
+            num_heads=2,
             num_head_channels=16,
             num_heads_upsample=-1,
             use_scale_shift_norm=True,
