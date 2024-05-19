@@ -15,6 +15,12 @@ from utils.parse import parse_settings
 from utils.seed import seed_everything
 
 
+def add_random_noise(img: torch.Tensor, max_intensity: float = 0.1) -> torch.Tensor:
+    intensity = max_intensity * torch.rand(1).to(img.device)
+    noise = intensity * torch.randn_like(img)
+    return img + noise
+
+
 def save_weights(model_save_path: str, model):
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     torch.save(model.state_dict(), model_save_path)
@@ -30,8 +36,8 @@ def train(config: AttributeHashmap):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     train_transform = A.Compose(
         [
-            A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=30, p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=45, p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
         ]
     )
     transforms_list = [train_transform, None, None]
@@ -70,6 +76,7 @@ def train(config: AttributeHashmap):
                 if iter_idx * config.batch_size > config.max_training_samples:
                     break
 
+            x_train = add_random_noise(x_train)
             x_train = x_train.float().to(device)
             seg_pred = model(x_train)
             seg_pred = seg_pred.squeeze(1).float().to(device)

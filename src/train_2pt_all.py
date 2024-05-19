@@ -123,8 +123,6 @@ def train(config: AttributeHashmap):
     mse_loss = torch.nn.MSELoss()
     best_val_psnr, best_val_dice = 0, 0
     backprop_freq = config.batch_size
-    if 'n_plot_per_epoch' not in config.keys():
-        config.n_plot_per_epoch = 1
 
     os.makedirs(config.save_folder + 'train/', exist_ok=True)
     os.makedirs(config.save_folder + 'val/', exist_ok=True)
@@ -204,7 +202,9 @@ def train_epoch(config: AttributeHashmap,
             filepath=config.log_dir,
             to_console=False)
 
-    plot_freq = int(min(config.max_training_samples, len(train_set)) // config.n_plot_per_epoch)
+    assert len(train_set) == len(train_set.dataset)
+    num_train_samples = min(config.max_training_samples, len(train_set))
+    plot_freq = num_train_samples // config.n_plot_per_epoch
     for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
         if iter_idx > config.max_training_samples:
@@ -336,7 +336,7 @@ def train_epoch(config: AttributeHashmap,
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs)
 
     train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
-        [item / len(train_set.dataset) for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        [item / num_train_samples for item in (train_loss_pred, train_loss_recon, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
     scheduler.step()
 
@@ -368,7 +368,9 @@ def train_epoch_I2SB(config: AttributeHashmap,
     model.train()
     optimizer.zero_grad()
 
-    plot_freq = int(min(config.max_training_samples, len(train_set)) // config.n_plot_per_epoch)
+    assert len(train_set) == len(train_set.dataset)
+    num_train_samples = min(config.max_training_samples, len(train_set))
+    plot_freq = num_train_samples // config.n_plot_per_epoch
     for iter_idx, (images, timestamps) in enumerate(tqdm(train_set)):
 
         if iter_idx > config.max_training_samples:
@@ -447,7 +449,7 @@ def train_epoch_I2SB(config: AttributeHashmap,
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs)
 
     train_loss_diffusion, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim = \
-        [item / len(train_set.dataset) for item in (train_loss_diffusion, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
+        [item / num_train_samples for item in (train_loss_diffusion, train_recon_psnr, train_recon_ssim, train_pred_psnr, train_pred_ssim)]
 
     scheduler.step()
 
@@ -491,7 +493,9 @@ def val_epoch(config: AttributeHashmap,
         print('Using an identity mapping as a placeholder for segmentor.')
         segmentor = torch.nn.Identity()
 
-    plot_freq = int(min(config.max_validation_samples, len(val_set)) // config.n_plot_per_epoch)
+    assert len(val_set) == len(val_set.dataset)
+    num_val_samples = min(config.max_validation_samples, len(val_set))
+    plot_freq = num_val_samples // config.n_plot_per_epoch
     for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
         shall_plot = iter_idx % plot_freq == 0
 
@@ -539,7 +543,7 @@ def val_epoch(config: AttributeHashmap,
     del segmentor
 
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt = \
-        [item / len(val_set.dataset) for item in (
+        [item / num_val_samples for item in (
             val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt)]
 
     log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
@@ -578,7 +582,9 @@ def val_epoch_I2SB(config: AttributeHashmap,
         print('Using an identity mapping as a placeholder for segmentor.')
         segmentor = torch.nn.Identity()
 
-    plot_freq = int(min(config.max_validation_samples, len(val_set)) // config.n_plot_per_epoch)
+    assert len(val_set) == len(val_set.dataset)
+    num_val_samples = min(config.max_validation_samples, len(val_set))
+    plot_freq = num_val_samples // config.n_plot_per_epoch
     for iter_idx, (images, timestamps) in enumerate(tqdm(val_set)):
         shall_plot = iter_idx % plot_freq == 0
 
@@ -636,7 +642,7 @@ def val_epoch_I2SB(config: AttributeHashmap,
     del segmentor
 
     val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt = \
-        [item / len(val_set.dataset) for item in (
+        [item / num_val_samples for item in (
             val_recon_psnr, val_recon_ssim, val_pred_psnr, val_pred_ssim, val_seg_dice_xT, val_seg_dice_gt)]
 
     log('Validation [%s/%s] PSNR (recon): %.3f, SSIM (recon): %.3f, PSNR (pred): %.3f, SSIM (pred): %.3f, Dice(xT_true, xT_pred): %.3f, Dice(x0_true, xT_true): %.3f.'
