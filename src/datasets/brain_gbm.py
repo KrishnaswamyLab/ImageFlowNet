@@ -22,6 +22,7 @@ def normalize_image(image: np.array) -> np.array:
     Image already normalized on scan level.
     Just transform to [-1, 1] and clipped to [-1, 1].
     '''
+    assert image.min() >= 0 and image.max() <= 255
     image = image / 255.0 * 2 - 1
     image = np.clip(image, -1.0, 1.0)
     return image
@@ -60,7 +61,8 @@ class BrainGBMDataset(Dataset):
 
     def __init__(self,
                  base_path: str = root_dir + '/data/brain_LUMIERE/',
-                 image_folder: str = 'LUMIERE_images_final_256x256/',
+                 image_folder: str = 'LUMIERE_images_tumor1200px_256x256/',
+                 max_slice_per_patient: int = 20,
                  target_dim: Tuple[int] = (256, 256)):
         '''
         The special thing here is that different patients may have different number of visits.
@@ -90,6 +92,8 @@ class BrainGBMDataset(Dataset):
         super().__init__()
 
         self.target_dim = target_dim
+        self.max_slice_per_patient = max_slice_per_patient
+
         self.all_patient_folders = sorted(glob('%s/%s/*/' % (base_path, image_folder)))
         self.all_patient_ids = [os.path.basename(item.rstrip('/')) for item in self.all_patient_folders]
         self.patient_id_to_slice_id = []  # maps the patient id to a list of corresponding slice ids.
@@ -102,9 +106,25 @@ class BrainGBMDataset(Dataset):
         for folder in self.all_patient_folders:
 
             num_slices_curr_patient = 0
-            slice_list = sorted(glob('%s/slice*/' % (folder)))
-            for curr_slice in slice_list:
+            slice_arr = np.array(sorted(glob('%s/slice*/' % (folder))))
+
+            if self.max_slice_per_patient is not None \
+                and len(slice_arr) > self.max_slice_per_patient:
+                subset_ids = np.linspace(0, len(slice_arr)-1, self.max_slice_per_patient)
+                subset_ids = np.array([int(item) for item in subset_ids])
+                slice_arr = slice_arr[subset_ids]
+
+            for curr_slice in slice_arr:
                 paths = sorted(glob('%s/week*.png' % curr_slice))
+
+                '''
+                Ignore week 0!!!
+                Week 0 is pre-operation, which means tumors will be cut!
+                This dynamics may be too complicated to learn.
+                If we ignore week 0, the remaining will likely be natural growth of tumor.
+                '''
+                paths = [p for p in paths if 'week_000' not in p]
+
                 if len(paths) >= 2:
                     self.image_by_slice.append(paths)
                     num_slices_curr_patient += 1
@@ -146,7 +166,7 @@ class BrainGBMSubset(BrainGBMDataset):
     def __init__(self,
                  main_dataset: BrainGBMDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'full_sequence'],
+                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'all_subarrays', 'full_sequence'],
                  transforms = None,
                  transforms_aug = None):
         '''
@@ -176,11 +196,13 @@ class BrainGBMSubset(BrainGBMDataset):
 
         self.all_image_pairs = []
         self.all_subsequences = []
+        self.all_subarrays = []
         for image_list in self.image_by_slice:
             pair_indices = list(itertools.combinations(np.arange(len(image_list)), r=2))
             for (idx1, idx2) in pair_indices:
                 self.all_image_pairs.append(
                     [image_list[idx1], image_list[idx2]])
+                self.all_subarrays.append(image_list[idx1 : idx2+1])
 
             for num_items in range(2, len(image_list)+1):
                 subsequence_indices_list = list(itertools.combinations(np.arange(len(image_list)), r=num_items))
@@ -197,6 +219,9 @@ class BrainGBMSubset(BrainGBMDataset):
         elif self.return_format == 'all_subsequences':
             # If we return all subsequences of images per patient...
             return len(self.all_subsequences)
+        elif self.return_format == 'all_subarrays':
+            # If we return all subarrays of images per patient...
+            return len(self.all_subarrays)
         elif self.return_format == 'full_sequence':
             # If we return the full sequences of images per patient...
             return len(self.image_by_slice)
@@ -225,6 +250,13 @@ class BrainGBMSubset(BrainGBMDataset):
 
         elif self.return_format == 'all_subsequences':
             queried_sequence = self.all_subsequences[idx]
+            images = np.array([
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
+            ])
+            timestamps = np.array([get_time(img) for img in queried_sequence])
+
+        elif self.return_format == 'all_subarrays':
+            queried_sequence = self.all_subarrays[idx]
             images = np.array([
                 load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
             ])
@@ -262,7 +294,7 @@ class BrainGBMSubset(BrainGBMDataset):
             else:
                 images = np.vstack((image1[None, ...], image2[None, ...]))
 
-        elif self.return_format in ['all_subsequences', 'full_sequence']:
+        elif self.return_format in ['all_subsequences', 'all_subarrays', 'full_sequence']:
             num_images = len(images)
             assert num_images >= 2
             assert num_images < 20  # NOTE: see `additional_targets` in `transform`.
@@ -289,8 +321,9 @@ class BrainGBMSegDataset(Dataset):
 
     def __init__(self,
                  base_path: str = root_dir + '/data/brain_LUMIERE/',
-                 image_folder: str = 'LUMIERE_images_final_256x256/',
-                 mask_folder: str = 'LUMIERE_masks_final_256x256/',
+                 image_folder: str = 'LUMIERE_images_tumor1200px_256x256/',
+                 mask_folder: str = 'LUMIERE_masks_tumor1200px_256x256/',
+                 max_slice_per_patient: int = 20,
                  target_dim: Tuple[int] = (256, 256)):
         '''
         This dataset is for segmentation.
@@ -298,20 +331,32 @@ class BrainGBMSegDataset(Dataset):
         super().__init__()
 
         self.target_dim = target_dim
-        all_image_folders = sorted(glob('%s/%s/Patient-*/slice*/' % (base_path, image_folder)))
+        self.max_slice_per_patient = max_slice_per_patient
+
+        all_patient_folders = sorted(glob('%s/%s/Patient-*/' % (base_path, image_folder)))
 
         self.image_by_patient = []
         self.mask_by_patient = []
-        for im_folder in all_image_folders:
-            image_paths = sorted(glob('%s/*.png' % im_folder))
-            mask_paths = []
-            for image_path_ in image_paths:
-                mask_path_ = image_path_.replace('.png', '').replace(
-                    image_folder, mask_folder) + '_GBM_mask.png'
-                assert os.path.isfile(mask_path_)
-                mask_paths.append(mask_path_)
-            self.image_by_patient.append(image_paths)
-            self.mask_by_patient.append(mask_paths)
+
+        for patient_folder in all_patient_folders:
+            curr_patient_slice_folders = np.array(sorted(glob('%s/slice*/' % patient_folder)))
+
+            if self.max_slice_per_patient is not None \
+                and len(curr_patient_slice_folders) > self.max_slice_per_patient:
+                subset_ids = np.linspace(0, len(curr_patient_slice_folders)-1, self.max_slice_per_patient)
+                subset_ids = np.array([int(item) for item in subset_ids])
+                curr_patient_slice_folders = curr_patient_slice_folders[subset_ids]
+
+            for im_folder in curr_patient_slice_folders:
+                image_paths = sorted(glob('%s/*.png' % im_folder))
+                mask_paths = []
+                for image_path_ in image_paths:
+                    mask_path_ = image_path_.replace('.png', '').replace(
+                        image_folder, mask_folder) + '_GBM_mask.png'
+                    assert os.path.isfile(mask_path_)
+                    mask_paths.append(mask_path_)
+                self.image_by_patient.append(image_paths)
+                self.mask_by_patient.append(mask_paths)
 
     def __len__(self) -> int:
         return len(self.image_by_patient)
@@ -360,7 +405,11 @@ class BrainGBMSegSubset(BrainGBMSegDataset):
             mask = transformed["mask"]
 
         image = normalize_image(image)
-        mask = mask > 0
+
+        # I believe this means necrosis and contrast enhancement.
+        # necrosis: 85, contrast enhancement: 170, edema: 255.
+        assert mask.min() == 0 and mask.max() <= 255
+        mask = np.logical_and(mask > 0, mask < 250)
 
         image = add_channel_dim(image)
         mask = add_channel_dim(mask)
@@ -369,5 +418,10 @@ class BrainGBMSegSubset(BrainGBMSegDataset):
 
 
 if __name__ == '__main__':
-    dataset = BrainGBMDataset()
+    print('Full set.')
+    dataset = BrainGBMDataset(max_slice_per_patient=None)
+    dataset.return_statistics()
+
+    print('Subset with max 20 slices per patient.')
+    dataset = BrainGBMDataset(max_slice_per_patient=20)
     dataset.return_statistics()

@@ -703,6 +703,9 @@ def test(config: AttributeHashmap):
     # Only relevant to ODE
     config.t_multiplier = config.ode_max_t / max_t
 
+    assert len(test_set) == len(test_set.dataset)
+    num_test_samples = min(config.max_testing_samples, len(test_set))
+
     for best_type in ['pred_psnr', 'seg_dice']:
         if best_type == 'pred_psnr':
 
@@ -824,9 +827,9 @@ def test(config: AttributeHashmap):
             plot_side_by_side(t_list, x0_true, xT_true, x0_recon, xT_recon, xT_pred, save_path_fig_sbs,
                               x0_true_seg=x0_seg, xT_pred_seg=xT_pred_seg, xT_true_seg=xT_seg)
 
-        test_loss = test_loss / len(test_set.dataset)
-        test_recon_psnr = test_recon_psnr / len(test_set.dataset)
-        test_recon_ssim = test_recon_ssim / len(test_set.dataset)
+        test_loss = test_loss / num_test_samples
+        test_recon_psnr = test_recon_psnr / num_test_samples
+        test_recon_ssim = test_recon_ssim / num_test_samples
 
         test_pred_psnr = np.array(test_pred_psnr)
         test_pred_ssim = np.array(test_pred_ssim)
@@ -1076,7 +1079,7 @@ if __name__ == '__main__':
     parser.add_argument('--train-val-test-ratio', default='6:2:2', type=str)
     parser.add_argument('--max-training-samples', default=2048, type=int)
     parser.add_argument('--max-validation-samples', default=256, type=int)
-    parser.add_argument('--max-testing-samples', default=5000, type=int)
+    parser.add_argument('--max-testing-samples', default=500, type=int)
     parser.add_argument('--n-plot-per-epoch', default=4, type=int)
 
     parser.add_argument('--no-l2', action='store_true')  # only relevant to ODE

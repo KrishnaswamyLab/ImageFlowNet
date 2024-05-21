@@ -125,7 +125,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
     def __init__(self,
                  main_dataset: RetinaUCSFDataset = None,
                  subset_indices: List[int] = None,
-                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'full_sequence'],
+                 return_format: str = Literal['one_pair', 'all_pairs', 'all_subsequences', 'all_subarrays', 'full_sequence'],
                  transforms = None,
                  transforms_aug = None):
         '''
@@ -154,11 +154,13 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
 
         self.all_image_pairs = []
         self.all_subsequences = []
+        self.all_subarrays = []
         for image_list in self.image_by_patient:
             pair_indices = list(itertools.combinations(np.arange(len(image_list)), r=2))
             for (idx1, idx2) in pair_indices:
                 self.all_image_pairs.append(
                     [image_list[idx1], image_list[idx2]])
+                self.all_subarrays.append(image_list[idx1 : idx2+1])
 
             for num_items in range(2, len(image_list)+1):
                 subsequence_indices_list = list(itertools.combinations(np.arange(len(image_list)), r=num_items))
@@ -175,6 +177,9 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
         elif self.return_format == 'all_subsequences':
             # If we return all subsequences of images per patient...
             return len(self.all_subsequences)
+        elif self.return_format == 'all_subarrays':
+            # If we return all subarrays of images per patient...
+            return len(self.all_subarrays)
         elif self.return_format == 'full_sequence':
             # If we return the full sequences of images per patient...
             return len(self.image_by_patient)
@@ -227,6 +232,13 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             ])
             timestamps = np.array([get_time(img) for img in queried_sequence])
 
+        elif self.return_format == 'all_subarrays':
+            queried_sequence = self.all_subarrays[idx]
+            images = np.array([
+                load_image(img, target_dim=self.target_dim, normalize=False) for img in queried_sequence
+            ])
+            timestamps = np.array([get_time(img) for img in queried_sequence])
+
         elif self.return_format == 'full_sequence':
             queried_sequence = self.image_by_patient[idx]
             images = np.array([
@@ -260,7 +272,7 @@ class RetinaUCSFSubset(RetinaUCSFDataset):
             else:
                 images = np.vstack((image1[None, ...], image2[None, ...]))
 
-        elif self.return_format in ['all_subsequences', 'full_sequence']:
+        elif self.return_format in ['all_subsequences', 'all_subarrays', 'full_sequence']:
             num_images = len(images)
             assert num_images >= 2
             assert num_images < 10  # NOTE: see `additional_targets` in `transform`.

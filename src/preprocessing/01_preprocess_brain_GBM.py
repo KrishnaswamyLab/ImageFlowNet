@@ -2,7 +2,7 @@
 All-in-one preprocessing script for the LUMIERE dataset.
 
 1. Find the longitudinal FLAIR MRI images and tumor masks.
-2. Perform affine registration across all images in the same longitudinal series.
+2. Perform affine + diffeomorphic registration across all images in the same longitudinal series.
 3. Identify slices that show significant tumors.
 4. Organize the resulting dataset in the following format.
 
@@ -26,26 +26,61 @@ from tqdm import tqdm
 import nibabel as nib
 import ants
 
+from sklearn.linear_model import LinearRegression
+
 
 def normalize(mri_scan):
     assert np.min(mri_scan) == 0
-    # lower_bound = 0
-    # upper_bound = np.percentile(mri_scan, 99.90)
+    # Approximately the pixel intensity of the blood.
     blood_value = np.mean(mri_scan[mri_scan > np.percentile(mri_scan, 99.90)])
-    # mri_scan = np.clip(mri_scan, lower_bound, upper_bound)
     mri_scan = mri_scan / blood_value / 1.5
-    # print(blood_value, mri_scan.max(), blood_value / mri_scan.max(), blood_value / np.percentile(mri_scan, 99.95))
-
     return np.uint8(mri_scan * 255)
+
+def rescale_mask(mask):
+    assert mask.min() == 0 and mask.max() <= 3
+    return np.uint8(mask * 85)  # scale it to [0, 255]
+
+def correct_receiver_gain(mri_scan_fixed,
+                          mri_scan_to_adjust,
+                          tumor_mask):
+    '''
+    Use the first MRI scan to correct for the second.
+    Using the non-tumor region to adjust for the receiver gain.
+    Note: only return the adjusted, second MRI scan.
+
+    Assuming scans are registered.
+    '''
+
+    brain_mask = mri_scan_to_adjust > 0
+    non_tumor_brain_mask = np.logical_and(brain_mask, ~tumor_mask)
+
+    X = mri_scan_to_adjust[non_tumor_brain_mask].reshape(-1, 1)
+    y = mri_scan_fixed[non_tumor_brain_mask].reshape(-1, 1)
+
+    # Fit linear model
+    lm = LinearRegression(fit_intercept=False)
+    lm.fit(X, y)
+
+    # Extract gain (slope)
+    gain = lm.coef_[0][0]
+
+    corrected_scan = np.zeros_like(mri_scan_to_adjust, dtype=np.uint8)
+    corrected_scan = gain * mri_scan_to_adjust
+
+    return corrected_scan
 
 
 if __name__ == '__main__':
     out_shape = np.array((256, 256))
-    min_tumor_size_pixel = 2500
+    min_tumor_size_pixel = 1200
+
+    # I believe the masks are:
+    # necrosis: 1, contrast enhancement: 2, edema: 3.
+    # For this script, we only care about the non-edema tumor.
 
     image_folder = '../../data/brain_LUMIERE/raw_images/'
-    final_image_folder = '../../data/brain_LUMIERE/LUMIERE_images_final_%dx%d' % (out_shape[0], out_shape[1])
-    final_mask_folder = '../../data/brain_LUMIERE/LUMIERE_masks_final_%dx%d' % (out_shape[0], out_shape[1])
+    final_image_folder = '../../data/brain_LUMIERE/LUMIERE_images_tumor%dpx_%dx%d' % (min_tumor_size_pixel, out_shape[0], out_shape[1])
+    final_mask_folder = '../../data/brain_LUMIERE/LUMIERE_masks_tumor%dpx_%dx%d' % (min_tumor_size_pixel, out_shape[0], out_shape[1])
 
     patient_dirs = sorted(glob(image_folder + '*'))
 
@@ -80,11 +115,11 @@ if __name__ == '__main__':
         # Otherwise skip the patient.
         mask_list = [np.uint8(nib.load(m_pth).get_fdata()) for m_pth in mask_path_list]
         stacked_mask = np.stack(mask_list, axis=0)
-        biggest_tumor_size = (stacked_mask > 0).sum(axis=(1, 3)).max()
+        biggest_tumor_size = (np.logical_and(stacked_mask > 0, stacked_mask < 3)).sum(axis=(1, 3)).max()
         if biggest_tumor_size < min_tumor_size_pixel:
             continue
 
-        # Perform affine registration towards the first time point in this series.
+        # Perform registration towards the first time point in this series.
         scan_list = [normalize(nib.load(s_pth).get_fdata()) for s_pth in scan_path_list]
         mask_list = [np.uint8(nib.load(m_pth).get_fdata()) for m_pth in mask_path_list]
         assert len(scan_list) == len(mask_list)
@@ -108,20 +143,44 @@ if __name__ == '__main__':
                                            moving_ants,
                                            'Affine')
 
-            registered_scan = ants.apply_transforms(fixed=fixed_ants,
-                                                    moving=moving_ants,
-                                                    transformlist=reg_affine['fwdtransforms'],
-                                                    interpolator='linear')
-            registered_mask = ants.apply_transforms(fixed=fixed_ants,
-                                                    moving=moving_mask_ants,
-                                                    transformlist=reg_affine['fwdtransforms'],
-                                                    interpolator='nearestNeighbor')
+            affine_ants = ants.apply_transforms(fixed=fixed_ants,
+                                                moving=moving_ants,
+                                                transformlist=reg_affine['fwdtransforms'],
+                                                interpolator='linear')
+            affine_mask_ants = ants.apply_transforms(fixed=fixed_ants,
+                                                     moving=moving_mask_ants,
+                                                     transformlist=reg_affine['fwdtransforms'],
+                                                     interpolator='nearestNeighbor')
 
-            final_stacked_scan[scan_idx] = registered_scan.numpy().astype(np.uint8)
-            final_stacked_mask[scan_idx] = registered_mask.numpy().astype(np.uint8)
+            # Very mild diffeomorphic registration to avoid deminishing structural changes.
+            reg_diffeomorphic = ants.registration(fixed_ants,
+                                                  affine_ants,
+                                                  'SyN',
+                                                  reg_iterations=(4, 2, 1))
+
+            diffeo_ants = ants.apply_transforms(fixed=fixed_ants,
+                                                moving=affine_ants,
+                                                transformlist=reg_diffeomorphic['fwdtransforms'],
+                                                interpolator='linear')
+            diffeo_mask_ants = ants.apply_transforms(fixed=fixed_ants,
+                                                     moving=affine_mask_ants,
+                                                     transformlist=reg_diffeomorphic['fwdtransforms'],
+                                                     interpolator='nearestNeighbor')
+
+            final_stacked_scan[scan_idx] = diffeo_ants.numpy().astype(np.uint8)
+            final_stacked_mask[scan_idx] = diffeo_mask_ants.numpy().astype(np.uint8)
+
+        # Receiver gain and offset correction.
+        for scan_idx in range(1, len(scan_list)):
+            union_tumor_mask = np.logical_or(final_stacked_mask[0] > 0,
+                                             final_stacked_mask[scan_idx] > 0)
+            final_stacked_scan[scan_idx] = correct_receiver_gain(final_stacked_scan[0],
+                                                                 final_stacked_scan[scan_idx],
+                                                                 union_tumor_mask)
 
         # Find the "interesting" slices.
-        tumor_size_by_slice = (final_stacked_mask > 0).sum(axis=(1, 3)).max(axis=0)
+        tumor_size_by_slice = \
+            (np.logical_and(final_stacked_mask > 0, final_stacked_mask < 3)).sum(axis=(1, 3)).max(axis=0)
         interesting_slices = np.argwhere(tumor_size_by_slice > min_tumor_size_pixel).ravel()
 
         # Save the "interesting" slices.
@@ -169,5 +228,6 @@ if __name__ == '__main__':
                     final_img[delta_size // 2 + 1 : final_img.shape[0] -  delta_size // 2, :] = img
                     final_mask[delta_size // 2 + 1 : final_img.shape[0] -  delta_size // 2, :] = msk
 
+                final_mask = rescale_mask(final_mask)
                 cv2.imwrite(out_fname_image, final_img)
                 cv2.imwrite(out_fname_mask, final_mask)

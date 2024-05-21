@@ -66,6 +66,9 @@ class ODEBlock(torch.nn.Module):
                      atol=self.tolerance)
         return out[1]
 
+    def flow_field_norm(self, x):
+        return torch.norm(self.odefunc(x), p=2)
+
     def vec_grad(self):
         '''
         NOTE: Only taking care of Conv2d weights.

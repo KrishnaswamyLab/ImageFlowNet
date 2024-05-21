@@ -53,10 +53,17 @@ def dice_coeff(label_pred: np.array, label_true: np.array) -> float:
 
 
 def hausdorff(label_pred: np.array, label_true: np.array) -> float:
-    if np.sum(label_pred) == 0 or np.sum(label_true) == 0:
-        # If `label_pred` or `label_true` is all zeros,
+    if np.sum(label_pred) == 0 and np.sum(label_true) == 0:
+        # If both of `label_pred` or `label_true` are all zeros,
+        # return 0.
+        return 0
+
+    elif np.sum(label_pred) == 0 or np.sum(label_true) == 0:
+        # If one of `label_pred` or `label_true` is all zeros,
+        # but not both,
         # return the max Euclidean distance.
-        H, W = label_true.shape
+        H, W = label_true.shape[:2]
         return np.sqrt((H**2 + W**2))
+
     else:
         return hausdorff_distance(label_pred, label_true)
