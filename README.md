@@ -164,7 +164,8 @@ cd src/preprocessing
 python 01_preprocess_brain_GBM.py
 ```
 
-## Prepare the Segment Anything Model (SAM), only for `test_registration.py`. Not used anywhere else.
+## Segment Anything Model (SAM)
+This is only used for `test_registration.py` to facilitate visualization. Not used anywhere else.
 ```
 cd `external_src/`
 mkdir SAM && cd SAM
