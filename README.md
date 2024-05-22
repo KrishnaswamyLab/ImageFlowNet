@@ -18,7 +18,7 @@ ImageFlowNet
     ├── comparison: some comparisons are in the `src` folder instead.
     |   └── interpolation
     |
-    ├── checkpoints: model weights are saved here.
+    ├── checkpoints: only for segmentor model weights. Other model weights in `results`.
     |
     ├── data: folders containing data files.
     |   ├── brain_LUMIERE: Brain Glioblastoma
