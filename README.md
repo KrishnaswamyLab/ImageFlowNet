@@ -164,6 +164,12 @@ cd src/preprocessing
 python 01_preprocess_brain_GBM.py
 ```
 
+## Prepare the Segment Anything Model (SAM), only for `test_registration.py`. Not used anywhere else.
+```
+cd `external_src/`
+mkdir SAM && cd SAM
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+```
 
 ## Dependencies
 We developed the codebase in a miniconda environment.
