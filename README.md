@@ -140,7 +140,7 @@ python train.py --outdir=../training-runs --data='../../../data/retina_ucsf/UCSF
     - Paper: https://www.nature.com/articles/s41597-022-01881-7
     - Data can be downloaded here: https://springernature.figshare.com/collections/The_LUMIERE_Dataset_Longitudinal_Glioblastoma_MRI_with_Expert_RANO_Evaluation/5904905/1
 
-## Data preprocessing
+## Data preparation and preprocessing
 1. Retinal Geographic Atrophy dataset.
 - Put data under: `data/retina_ucsf/Images/`
 ```
@@ -158,7 +158,7 @@ python 01_preprocess_brain_MS.py
 ```
 
 3. Brain Glioblastoma dataset.
-- Put data under: `data/brain_LUMIERE` after unzipping.
+- Put data under: `data/brain_LUMIERE/` after unzipping.
 ```
 cd src/preprocessing
 python 01_preprocess_brain_GBM.py
