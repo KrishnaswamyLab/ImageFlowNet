@@ -129,7 +129,7 @@ python train.py --outdir=../training-runs --data='../../../data/retina_ucsf/UCSF
 ```
 
 ## Datasets
-1. Retinal Geographic Atrophy dataset from MET4MIN study (UCSF).
+1. Retinal Geographic Atrophy dataset from METforMIN study (UCSF).
     - Paper: https://www.sciencedirect.com/science/article/pii/S2666914523001720.
     - You may contact the authors. Data may or may not be available.
 2. Brain Multiple Sclerosis dataset.
