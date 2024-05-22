@@ -8,25 +8,28 @@ We want to predict the progression of diseases by interpolating or extrapolating
 
 ## Repository Hierarchy
 ```
-```
-
-## Data Provided
-Retinal dataset from UCSF.
-
-## Setup
-1. Create the environment following instructions in **Dependencies**.
-2. Download a pre-trained segmentation model (for data preprocessing purposes).
-```
-cd `external_src/SAM/`
-wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
-```
-
-3. Data preprocessing
-```
-cd src/preprocessing
-python 01_preprocess_retina_UCSF.py
-python 02_register_retina_UCSF.py
-python 03_crop_retina_UCSF.py
+ImageFlowNet
+    ├── comparison: some comparisons are in the `src` folder instead.
+    |   └── interpolation
+    |
+    ├── checkpoints: model weights are saved here.
+    |
+    ├── data: folders containing data files.
+    |   ├── brain_LUMIERE: Brain Glioblastoma
+    |   ├── brain_MS: Brain Multiple Sclerosis
+    |   └── retina_ucsf: Retinal Geographic Atrophy
+    |
+    ├── external_src: other repositories or code.
+    |
+    ├── results: generated results, including training log, model weights, and evaluation results.
+    |
+    └── src
+        ├── data_utils
+        ├── datasets
+        ├── nn
+        ├── preprocessing
+        ├── utils
+        └── *.py: some main scripts
 ```
 
 ## Reproduce the results
@@ -40,40 +43,46 @@ python test_registration.py
 ### Training a segmentation network (only for quantitative evaluation purposes)
 ```
 cd src/
-python train_segmentor.py --mode train --config ../config/segment_retinaUCSF_seed1.yaml
+python train_segmentor.py
 ```
 
 ### Training the main network.
 ```
 cd src/
-# Time-conditional UNet (baseline)
+# Time-conditional UNet
 python train_2pt_all.py --model T_UNet --random-seed 1 --mode train
 python train_2pt_all.py --model T_UNet --random-seed 1 --mode test --run-count 1
 
-# Schrodinger Bridge
+# Diffusion model Schrodinger Bridge
 python train_2pt_all.py --model I2SBUNet --random-seed 1
 python train_2pt_all.py --model I2SBUNet --random-seed 1 --mode test --run-count 1
 
-# ODE-UNet
+# ImageFlowNet_{ODE}
 python train_2pt_all.py --model StaticODEUNet --random-seed 1
 python train_2pt_all.py --model StaticODEUNet --random-seed 1 --mode test --run-count 1
 ```
 
-### Additional configurations to try.
-1. Gradient field formulation.
+### Some common arguments.
+```
+--dataset-name: name of the dataset (`retina_ucsf`, `brain_ms`, `brain_gbm`)
+--segmentor-ckpt: the location of the segmentor model. Both for training and using the segmentor.
+```
+
+### Ablations.
+1. Flow field formulation.
 ```
 python train_2pt_all.py --model ODEUNet
 python train_2pt_all.py --model StaticODEUNet
 ```
 
-2. Which latent representations for ODE?
+2. Single-scale vs multiscale ODEs.
 ```
 python train_2pt_all.py --model StaticODEUNet --ode-location 'bottleneck'
 python train_2pt_all.py --model StaticODEUNet --ode-location 'all_resolutions'
 python train_2pt_all.py --model StaticODEUNet --ode-location 'all_connections' # default
 ```
 
-3. Latent feature regularization.
+3. Visual feature regularization.
 ```
 python train_2pt_all.py --model StaticODEUNet --coeff-latent 0.1
 ```
@@ -108,6 +117,43 @@ cd ../../comparison/style_manifold_extrapolation/stylegan2-ada-pytorch
 python train.py --outdir=../training-runs --data='../../../data/retina_ucsf/UCSF_images_final_unpacked_256x256/' --gpus=1
 
 ```
+
+## Datasets
+1. Retinal Geographic Atrophy dataset from MET4MIN study (UCSF).
+    - Paper: https://www.sciencedirect.com/science/article/pii/S2666914523001720.
+    - You may contact the authors. Data may or may not be available.
+2. Brain Multiple Sclerosis dataset.
+    - Paper: https://www.sciencedirect.com/science/article/pii/S1053811916307819?via%3Dihub
+    - Data can be requested here: https://iacl.ece.jhu.edu/index.php?title=MSChallenge/data
+    - Or more specifically, here: https://smart-stats-tools.org/lesion-challenge
+3. Brain Glioblastoma dataset.
+    - Paper: https://www.nature.com/articles/s41597-022-01881-7
+    - Data can be downloaded here: https://springernature.figshare.com/collections/The_LUMIERE_Dataset_Longitudinal_Glioblastoma_MRI_with_Expert_RANO_Evaluation/5904905/1
+
+## Data preprocessing
+1. Retinal Geographic Atrophy dataset.
+- Put data under: `data/retina_ucsf/Images/`
+```
+cd src/preprocessing
+python 01_preprocess_retina_UCSF.py
+python 02_register_retina_UCSF.py
+python 03_crop_retina_UCSF.py
+```
+
+2. Brain Multiple Sclerosis dataset.
+- Put data under: `data/brain_MS/brain_MS_images/trainX/` after unzipping.
+```
+cd src/preprocessing
+python 01_preprocess_brain_MS.py
+```
+
+3. Brain Glioblastoma dataset.
+- Put data under: `data/brain_LUMIERE` after unzipping.
+```
+cd src/preprocessing
+python 01_preprocess_brain_GBM.py
+```
+
 
 ## Dependencies
 We developed the codebase in a miniconda environment.

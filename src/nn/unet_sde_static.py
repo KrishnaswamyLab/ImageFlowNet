@@ -22,6 +22,7 @@ class StaticSDEUNet(BaseNetwork):
         '''
         A UNet model with SDE.
         NOTE: This is a UNet with a static SDE vector field.
+        NOTE: Will rename to "PPSDEUNet" which stands for position-parameterized SDE UNet.
 
         Parameters
         ----------

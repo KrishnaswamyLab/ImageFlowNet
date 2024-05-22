@@ -22,6 +22,7 @@ class StaticODEUNet(BaseNetwork):
         '''
         A UNet model with ODE.
         NOTE: This is a UNet with a static ODE vector field.
+        NOTE: Will rename to "PPODEUNet" which stands for position-parameterized ODE UNet.
 
         Parameters
         ----------
