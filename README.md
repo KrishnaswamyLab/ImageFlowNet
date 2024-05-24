@@ -55,14 +55,6 @@ python train_segmentor.py
 ### Training the main network.
 ```
 cd src/
-# Time-conditional UNet
-python train_2pt_all.py --model T_UNet --random-seed 1 --mode train
-python train_2pt_all.py --model T_UNet --random-seed 1 --mode test --run-count 1
-
-# Diffusion model Schrodinger Bridge
-python train_2pt_all.py --model I2SBUNet --random-seed 1
-python train_2pt_all.py --model I2SBUNet --random-seed 1 --mode test --run-count 1
-
 # ImageFlowNet_{ODE}
 python train_2pt_all.py --model StaticODEUNet --random-seed 1
 python train_2pt_all.py --model StaticODEUNet --random-seed 1 --mode test --run-count 1
@@ -113,6 +105,20 @@ Image interpolation/extrapolation methods.
 cd comparison/interpolation
 python run_baseline_interp.py --method linear
 python run_baseline_interp.py --method cubic_spline
+```
+
+Time-conditional UNet.
+```
+cd src
+python train_2pt_all.py --model T_UNet --random-seed 1 --mode train
+python train_2pt_all.py --model T_UNet --random-seed 1 --mode test --run-count 1
+```
+
+Time-aware diffusion model (Image-to-Image Schrodinger Bridge)
+```
+cd src
+python train_2pt_all.py --model I2SBUNet --random-seed 1
+python train_2pt_all.py --model I2SBUNet --random-seed 1 --mode test --run-count 1
 ```
 
 Style-based Manifold Extrapolation (Nat. Mach. Int. 2022).
