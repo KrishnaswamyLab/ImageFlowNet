@@ -191,7 +191,7 @@ def prepare_dataset_full_sequence(config: AttributeHashmap, transforms_list = [N
                           shuffle=False,
                           num_workers=config.num_workers)
 
-    return full_set, dataset.num_image_channel()
+    return full_set, dataset.num_image_channel(), dataset.max_t
 
 
 def prepare_dataset_all_subarrays(config: AttributeHashmap, transforms_list = [None, None, None]):
