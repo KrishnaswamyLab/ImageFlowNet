@@ -739,9 +739,6 @@ def test(config: AttributeHashmap):
             assert images.shape[1] == 2
             assert timestamps.shape[1] == 2
 
-            assert images.shape[1] == 2
-            assert timestamps.shape[1] == 2
-
             x_list, t_list = convert_variables(images, timestamps, device)
             x_start, x_end = x_list
 

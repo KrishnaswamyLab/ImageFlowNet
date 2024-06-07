@@ -299,3 +299,34 @@ class StaticSDEUNet(BaseNetwork):
             h = module(h, emb)
 
         return embeddings_before, embeddings_after
+
+    @torch.no_grad()
+    def embedding_bottleneck_traj(self, x: torch.Tensor, t: torch.Tensor):
+        """
+        Return the trajectory of embeddings from the bottleneck layer.
+
+        :param x: an [N x C x ...] Tensor of inputs.
+        :param t: a 1-D batch of timesteps.
+        """
+
+        integration_time = t
+
+        # Provide a dummy time embedding, since we are learning a static SDE vector field.
+        dummy_t = torch.zeros_like(t[0].unsqueeze(0)).to(t.device)
+        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+
+        h = x.type(self.unet.dtype)
+
+        # Contraction path.
+        h_skip_connection = []
+        for module in self.unet.input_blocks:
+            h = module(h, emb)
+            h_skip_connection.append(h)
+
+        # Bottleneck
+        h = self.unet.middle_block(h, emb)
+
+        # SDE on bottleneck
+        h_traj = self.sde_list[-1].forward_traj(h, integration_time)
+
+        return h_traj

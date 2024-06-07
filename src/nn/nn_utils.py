@@ -64,7 +64,7 @@ class ODEBlock(torch.nn.Module):
                      integration_time,
                      rtol=self.tolerance,
                      atol=self.tolerance)
-        return out[1]
+        return out[-1]  # equivalent to `out[1]` if len(integration_time) == 2.
 
     def flow_field_norm(self, x):
         return torch.norm(self.odefunc(x), p=2)
@@ -194,6 +194,24 @@ class SDEBlock(torch.nn.Module):
             if isinstance(m, torch.nn.Conv2d):
                 sum_weight_sq_norm += (m.weight ** 2).sum()
         return sum_weight_sq_norm
+
+    @torch.no_grad()
+    def forward_traj(self, x, integration_time):
+        integration_time = integration_time.type_as(x)
+        x = x.reshape(x.shape[0], -1)
+
+        sde_int = torchsde.sdeint_adjoint if self.adjoint else torchsde.sdeint
+
+        out = sde_int(self.sdefunc,
+                      x,
+                      integration_time,
+                      dt=1e-4,
+                      method='euler', # otherwise OOM
+                      rtol=self.tolerance,
+                      atol=self.tolerance)
+        out_spatial_dim = int(np.sqrt(out.shape[-1] / self.sdefunc.dim))
+        out = out.reshape(out.shape[0], self.sdefunc.dim, out_spatial_dim, out_spatial_dim)
+        return out
 
 
 class LatentClassifier(torch.nn.Module):
