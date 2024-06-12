@@ -58,12 +58,12 @@ python train_segmentor.py
 ```
 cd src/
 # ImageFlowNet_{ODE}
-python train_2pt_all.py --model StaticODEUNet --random-seed 1
-python train_2pt_all.py --model StaticODEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model PPODEUNet --random-seed 1
+python train_2pt_all.py --model PPODEUNet --random-seed 1 --mode test --run-count 1
 
 # ImageFlowNet_{SDE}
-python train_2pt_all.py --model StaticSDEUNet --random-seed 1
-python train_2pt_all.py --model StaticSDEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model PPSDEUNet --random-seed 1
+python train_2pt_all.py --model PPSDEUNet --random-seed 1 --mode test --run-count 1
 ```
 
 ### Some common arguments.
@@ -76,29 +76,29 @@ python train_2pt_all.py --model StaticSDEUNet --random-seed 1 --mode test --run-
 1. Flow field formulation.
 ```
 python train_2pt_all.py --model ODEUNet
-python train_2pt_all.py --model StaticODEUNet
+python train_2pt_all.py --model PPODEUNet
 ```
 
 2. Single-scale vs multiscale ODEs.
 ```
-python train_2pt_all.py --model StaticODEUNet --ode-location 'bottleneck'
-python train_2pt_all.py --model StaticODEUNet --ode-location 'all_resolutions'
-python train_2pt_all.py --model StaticODEUNet --ode-location 'all_connections' # default
+python train_2pt_all.py --model PPODEUNet --ode-location 'bottleneck'
+python train_2pt_all.py --model PPODEUNet --ode-location 'all_resolutions'
+python train_2pt_all.py --model PPODEUNet --ode-location 'all_connections' # default
 ```
 
 3. Visual feature regularization.
 ```
-python train_2pt_all.py --model StaticODEUNet --coeff-latent 0.1
+python train_2pt_all.py --model PPODEUNet --coeff-latent 0.1
 ```
 
 4. Contrastive learning regularization.
 ```
-python train_2pt_all.py --model StaticODEUNet --coeff-contrastive 0.1
+python train_2pt_all.py --model PPODEUNet --coeff-contrastive 0.1
 ```
 
 5. Trajectory smoothness regularization.
 ```
-python train_2pt_all.py --model StaticODEUNet --coeff-smoothness 0.1
+python train_2pt_all.py --model PPODEUNet --coeff-smoothness 0.1
 ```
 
 ### Comparisons
