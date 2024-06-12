@@ -28,10 +28,8 @@ from nn.autoencoder import AutoEncoder
 from nn.autoencoder_t_emb import T_AutoEncoder
 from nn.autoencoder_ode import ODEAutoEncoder
 from nn.unet_ode import ODEUNet
-from nn.unet_ode_static import StaticODEUNet
-from nn.unet_ode_simple import ODEUNetSimple
-from nn.unet_ode_simple_static import StaticODEUNetSimple
-from nn.unet_sde_static import StaticSDEUNet
+from nn.unet_ode_position_parametrized import PPODEUNet
+from nn.unet_sde_position_parametrized import PPSDEUNet
 from nn.unet_t_emb import T_UNet
 from nn.unet_i2sb import I2SBUNet
 from nn.off_the_shelf_encoder import VisionEncoder
@@ -1061,7 +1059,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-save-folder', default='$ROOT/results/', type=str)
     parser.add_argument('--segmentor-ckpt', default='$ROOT/checkpoints/segment_retinaUCSF_seed1.pty', type=str)
 
-    parser.add_argument('--model', default='StaticODEUNet', type=str)
+    parser.add_argument('--model', default='PPODEUNet', type=str)
     parser.add_argument('--random-seed', default=1, type=int)
     parser.add_argument('--learning-rate', default=1e-4, type=float)
     parser.add_argument('--max-epochs', default=120, type=int)

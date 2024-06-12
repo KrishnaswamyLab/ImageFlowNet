@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import torch
 from .base import BaseNetwork
-from .nn_utils import StaticODEfunc, ODEBlock
+from .nn_utils import PPODEfunc, SDEFunc, SDEBlock
 
 import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-3])
 sys.path.insert(0, import_dir + '/external_src/I2SB/')
@@ -11,7 +11,7 @@ from guided_diffusion.script_util import create_model
 from guided_diffusion.unet import timestep_embedding
 
 
-class StaticODEUNet(BaseNetwork):
+class PPSDEUNet(BaseNetwork):
 
     def __init__(self,
                  device: torch.device,
@@ -20,9 +20,8 @@ class StaticODEUNet(BaseNetwork):
                  contrastive: bool = False,
                  **kwargs):
         '''
-        A UNet model with ODE.
-        NOTE: This is a UNet with a static ODE vector field.
-        NOTE: Will rename to "PPODEUNet" which stands for position-parameterized ODE UNet.
+        A UNet model with SDE.
+        NOTE: This is a UNet with a position-paramterized SDE vector field.
 
         Parameters
         ----------
@@ -31,9 +30,9 @@ class StaticODEUNet(BaseNetwork):
             Number of input image channels.
 
         ode_location: str
-            If 'bottleneck', only perform ODE on the bottleneck layer.
-            If 'all_resolutions', skip connections with the same resolution share the same ODE.
-            If 'all_connections', perform ODE separately in all skip connections.
+            If 'bottleneck', only perform SDE on the bottleneck layer.
+            If 'all_resolutions', skip connections with the same resolution share the same SDE.
+            If 'all_connections', perform SDE separately in all skip connections.
 
         contrastive: bool
             Whether or not to perform contrastive learning (SimSiam) on bottleneck layer.
@@ -50,11 +49,12 @@ class StaticODEUNet(BaseNetwork):
         image_size = 256  # TODO: currently hard coded
 
         # NOTE: This model is smaller than the other counterparts,
-        # because running NeuralODE require some significant GPU space.
+        # because running NeuralSDE require some significant GPU space.
         # initialize model
         self.unet = create_model(
             image_size=image_size,
             in_channels=in_channels,
+            # num_channels=32,                 # avoid OOM for GBM dataset
             num_channels=64,
             num_res_blocks=1,
             channel_mult='',
@@ -62,6 +62,7 @@ class StaticODEUNet(BaseNetwork):
             class_cond=False,
             use_checkpoint=False,
             attention_resolutions='32,16,8',
+            # num_heads=2,                     # avoid OOM for GBM dataset
             num_heads=4,
             num_head_channels=16,
             num_heads_upsample=-1,
@@ -82,19 +83,31 @@ class StaticODEUNet(BaseNetwork):
         h_dummy_bottleneck = self.unet.middle_block(h_dummy, emb)
         self.dim_list.append(h_dummy_bottleneck.shape[1])
 
-        # Construct the ODE modules.
-        self.ode_list = torch.nn.ModuleList([])
+        # Construct the SDE modules.
+        self.sde_list = torch.nn.ModuleList([])
+
         if self.ode_location == 'bottleneck':
-            self.ode_list.append(ODEBlock(StaticODEfunc(dim=h_dummy_bottleneck.shape[1])))
+            self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=h_dummy_bottleneck.shape[1]))))
         elif self.ode_location == 'all_resolutions':
             for dim in np.unique(self.dim_list):
-                self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
+                self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=dim))))
         elif self.ode_location == 'all_connections':
             for dim in self.dim_list:
-                self.ode_list.append(ODEBlock(StaticODEfunc(dim=dim)))
+                self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=dim))))
+        # if self.ode_location == 'bottleneck':
+        #     self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=h_dummy_bottleneck.shape[1]),
+        #                                           sde_sigma=ODEfunc(dim=h_dummy_bottleneck.shape[1]))))
+        # elif self.ode_location == 'all_resolutions':
+        #     for dim in np.unique(self.dim_list):
+        #         self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=dim),
+        #                                               sde_sigma=ODEfunc(dim=dim))))
+        # elif self.ode_location == 'all_connections':
+        #     for dim in self.dim_list:
+        #         self.sde_list.append(SDEBlock(SDEFunc(sde_mu=PPODEfunc(dim=dim),
+        #                                               sde_sigma=ODEfunc(dim=dim))))
 
         self.unet.to(self.device)
-        self.ode_list.to(self.device)
+        self.sde_list.to(self.device)
 
         if self.contrastive:
             pred_dim = 256
@@ -111,11 +124,17 @@ class StaticODEUNet(BaseNetwork):
             self.projector.to(self.device)
             self.predictor.to(self.device)
 
+    def init_params(self):
+        super().init_params()
+        for block in self.sde_list:
+            block.init_params()
+        return
+
     def time_independent_parameters(self):
         '''
-        Parameters related to ODE.
+        Parameters related to SDE.
         '''
-        return set(self.parameters()) - set(self.ode_list.parameters())
+        return set(self.parameters()) - set(self.sde_list.parameters())
 
     def freeze_time_independent(self):
         '''
@@ -124,7 +143,7 @@ class StaticODEUNet(BaseNetwork):
         for p in self.time_independent_parameters():
             p.requires_grad = False
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, return_grad: bool = False):
+    def forward(self, x: torch.Tensor, t: torch.Tensor, return_grad: bool = False, checkpointing: bool = True):
         """
         Apply the model to an input batch.
 
@@ -133,12 +152,12 @@ class StaticODEUNet(BaseNetwork):
         :return: an [N x C x ...] Tensor of outputs.
         """
 
-        # Skip ODE if no time difference.
-        use_ode = t.item() != 0
-        if use_ode:
+        # Skip SDE if no time difference.
+        use_sde = t.item() != 0
+        if use_sde:
             integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
-        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        # Provide a dummy time embedding, since we are learning a position-paramterized SDE vector field.
         dummy_t = torch.zeros_like(t).to(t.device)
         emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
 
@@ -147,46 +166,62 @@ class StaticODEUNet(BaseNetwork):
         # Contraction path.
         h_skip_connection = []
         for module in self.unet.input_blocks:
-            h = module(h, emb)
+            if checkpointing and h.requires_grad and any(param.requires_grad for param in module.parameters()):
+                h = torch.utils.checkpoint.checkpoint(module, h, emb)
+            else:
+                h = module(h, emb)
             h_skip_connection.append(h)
 
         # Bottleneck
-        h = self.unet.middle_block(h, emb)
+        if checkpointing and h.requires_grad and any(param.requires_grad for param in self.unet.middle_block.parameters()):
+            h = torch.utils.checkpoint.checkpoint(self.unet.middle_block, h, emb)
+        else:
+            h = self.unet.middle_block(h, emb)
 
-        # ODE on bottleneck
-        if use_ode:
-            h = self.ode_list[-1](h, integration_time)
+        # SDE on bottleneck
+        if use_sde:
+            h = self.sde_list[-1](h, integration_time)
 
         # Expansion path.
         for module_idx, module in enumerate(self.unet.output_blocks):
             h_skip = h_skip_connection.pop(-1)
 
-            # ODE over skip connections.
-            if use_ode and self.ode_location in ['all_resolutions', 'all_connections']:
+            # SDE over skip connections.
+            if use_sde and self.ode_location in ['all_resolutions', 'all_connections']:
                 if self.ode_location == 'all_connections':
-                    curr_ode_block = self.ode_list[::-1][module_idx + 1]
+                    curr_sde_block = self.sde_list[::-1][module_idx + 1]
                 else:
                     resolution_idx = np.argwhere(np.unique(self.dim_list) == h_skip.shape[1]).item()
-                    curr_ode_block = self.ode_list[resolution_idx]
-                h_skip = curr_ode_block(h_skip, integration_time)
+                    curr_sde_block = self.sde_list[resolution_idx]
+
+                if checkpointing and h_skip.requires_grad and any(param.requires_grad for param in curr_sde_block.parameters()):
+                    h_skip = torch.utils.checkpoint.checkpoint(curr_sde_block, h_skip, integration_time)
+                else:
+                    h_skip = curr_sde_block(h_skip, integration_time)
 
             h = torch.cat([h, h_skip], dim=1)
-            h = module(h, emb)
+            if checkpointing and h.requires_grad and any(param.requires_grad for param in module.parameters()):
+                h = torch.utils.checkpoint.checkpoint(module, h, emb)
+            else:
+                h = module(h, emb)
 
         # Output.
         h = h.type(x.dtype)
-        output = self.unet.out(h)
+        if checkpointing and h.requires_grad and any(param.requires_grad for param in self.unet.out.parameters()):
+            output = torch.utils.checkpoint.checkpoint(self.unet.out, h)
+        else:
+            output = self.unet.out(h)
 
         if return_grad:
             vec_field_gradients = 0
-            for i in range(len(self.ode_list)):
-                vec_field_gradients += self.ode_list[i].vec_grad()
-            return output, vec_field_gradients.mean() / len(self.ode_list)
+            for i in range(len(self.sde_list)):
+                vec_field_gradients += self.sde_list[i].vec_grad()
+            return output, vec_field_gradients.mean() / len(self.sde_list)
         else:
             return output
 
     def simsiam_project(self, x: torch.Tensor):
-        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        # Provide a dummy time embedding, since we are learning a position-paramterized SDE vector field.
         dummy_t = torch.zeros(1).to(x.device)
         emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
 
@@ -217,12 +252,12 @@ class StaticODEUNet(BaseNetwork):
         embeddings_before = []
         embeddings_after = []
 
-        # Skip ODE if no time difference.
-        use_ode = t.item() != 0
-        if use_ode:
+        # Skip SDE if no time difference.
+        use_sde = t.item() != 0
+        if use_sde:
             integration_time = torch.tensor([0, t.item()]).float().to(t.device)
 
-        # Provide a dummy time embedding, since we are learning a static ODE vector field.
+        # Provide a dummy time embedding, since we are learning a position-paramterized SDE vector field.
         dummy_t = torch.zeros_like(t).to(t.device)
         emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
 
@@ -237,29 +272,60 @@ class StaticODEUNet(BaseNetwork):
         # Bottleneck
         h = self.unet.middle_block(h, emb)
 
-        # ODE on bottleneck
+        # SDE on bottleneck
         embeddings_before.append(h)
-        if use_ode:
-            h = self.ode_list[-1](h, integration_time)
+        if use_sde:
+            h = self.sde_list[-1](h, integration_time)
             embeddings_after.append(h)
 
         # Expansion path.
         for module_idx, module in enumerate(self.unet.output_blocks):
             h_skip = h_skip_connection.pop(-1)
 
-            # ODE over skip connections.
+            # SDE over skip connections.
             embeddings_before.append(h_skip)
-            if use_ode and self.ode_location in ['all_resolutions', 'all_connections']:
+            if use_sde and self.ode_location in ['all_resolutions', 'all_connections']:
                 if self.ode_location == 'all_connections':
-                    curr_ode_block = self.ode_list[::-1][module_idx + 1]
+                    curr_sde_block = self.sde_list[::-1][module_idx + 1]
                 else:
                     resolution_idx = np.argwhere(np.unique(self.dim_list) == h_skip.shape[1]).item()
-                    curr_ode_block = self.ode_list[resolution_idx]
+                    curr_sde_block = self.sde_list[resolution_idx]
 
-                h_skip = curr_ode_block(h_skip, integration_time)
+                h_skip = curr_sde_block(h_skip, integration_time)
                 embeddings_after.append(h_skip)
 
             h = torch.cat([h, h_skip], dim=1)
             h = module(h, emb)
 
         return embeddings_before, embeddings_after
+
+    @torch.no_grad()
+    def embedding_bottleneck_traj(self, x: torch.Tensor, t: torch.Tensor):
+        """
+        Return the trajectory of embeddings from the bottleneck layer.
+
+        :param x: an [N x C x ...] Tensor of inputs.
+        :param t: a 1-D batch of timesteps.
+        """
+
+        integration_time = t
+
+        # Provide a dummy time embedding, since we are learning a position-paramterized SDE vector field.
+        dummy_t = torch.zeros_like(t[0].unsqueeze(0)).to(t.device)
+        emb = self.unet.time_embed(timestep_embedding(dummy_t, self.unet.model_channels))
+
+        h = x.type(self.unet.dtype)
+
+        # Contraction path.
+        h_skip_connection = []
+        for module in self.unet.input_blocks:
+            h = module(h, emb)
+            h_skip_connection.append(h)
+
+        # Bottleneck
+        h = self.unet.middle_block(h, emb)
+
+        # SDE on bottleneck
+        h_traj = self.sde_list[-1].forward_traj(h, integration_time)
+
+        return h_traj

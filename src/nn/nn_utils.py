@@ -27,7 +27,7 @@ class ODEfunc(torch.nn.Module):
         out = self.relu(out)
         return out
 
-class StaticODEfunc(torch.nn.Module):
+class PPODEfunc(torch.nn.Module):
 
     def __init__(self, dim):
         super().__init__()
