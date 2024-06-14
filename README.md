@@ -210,6 +210,7 @@ python -m pip install ninja
 python -m pip install antspyx
 ```
 
+<!--
 # Environment for stylegan2-ada
 ```
 conda create --name stylegan python=3.8 -c anaconda
@@ -222,6 +223,7 @@ python -m pip install ninja
 python -m pip install requests
 conda install -c conda-forge gcc=12.1.0
 ```
+-->
 
 
 ## Acknowledgements
