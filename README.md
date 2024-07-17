@@ -50,6 +50,11 @@ ImageFlowNet
         └── *.py: some main scripts
 ```
 
+## Pre-trained weights
+We have uploaded the weights for the retinal images.
+1. The weights for the segmentor can be found in `checkpoints/segment_retinaUCSF_seed1.pty`
+2. The weights for the ImageFlowNetODE models can be found in [Google Drive](https://drive.google.com/drive/folders/1fXgSU8GUUBQ2DTgglsu4rRDoV9gQVyU_). You can put them under `results/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1/run_1/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1_best_pred_psnr.pty` and `results/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1/run_1/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1_best_seg_dice.pty`.
+
 ## Reproduce the results
 
 ### Image registration
