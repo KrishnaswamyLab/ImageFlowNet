@@ -10,6 +10,16 @@ Please raise issues [here](https://github.com/ChenLiu-1996/ImageFlowNet).
 ## A Glimpse into the Methods
 <img src = "assets/architecture.png" width=800>
 
+## Citation
+
+```
+@article{liu2024imageflownet,
+  title={ImageFlowNet: Forecasting Multiscale Trajectories of Disease Progression with Irregularly-Sampled Longitudinal Medical Images},
+  author={Liu, Chen and Xu, Ke and Shen, Liangbo L and Huguet, Guillaume and Wang, Zilong and Tong, Alexander and Bzdok, Danilo and Stewart, Jay and Wang, Jay C and Del Priore, Lucian V and Krishnaswamy, Smita}
+  journal={arXiv preprint arXiv:2406.14794},
+  year={2024}
+}
+```
 
 ## Abstract
 The forecasting of disease progression from images is a holy grail for clinical decision making. However, this task is complicated by the inherent high dimensionality, temporal sparsity and sampling irregularity in longitudinal image acquisitions. Existing methods often rely on extracting hand-crafted features and performing time-series analysis in this vector space, leading to a loss of rich spatial information within the images. To overcome these challenges, we introduce ImageFlowNet, a novel framework that learns latent-space flow fields that evolve multiscale representations in joint embedding spaces using neural ODEs and SDEs to model disease progression in the image domain. Notably, ImageFlowNet learns multiscale joint representation spaces by combining cohorts of patients together so that information can be transferred between the patient samples. The dynamics then provide plausible trajectories of progress, with the SDE providing alternative trajectories from the same starting point. We provide theoretical insights that support our formulation of ODEs, and motivate our regularizations involving high-level visual features, latent space organization, and trajectory smoothness. We then demonstrate ImageFlowNet's effectiveness through empirical evaluations on three longitudinal medical image datasets depicting progression in retinal geographic atrophy, multiple sclerosis, and glioblastoma.
@@ -51,6 +61,11 @@ ImageFlowNet
         └── *.py: some main scripts
 ```
 
+## Pre-trained weights
+We have uploaded the weights for the retinal images.
+1. The weights for the segmentor can be found in `checkpoints/segment_retinaUCSF_seed1.pty`
+2. The weights for the ImageFlowNetODE models can be found in [Google Drive](https://drive.google.com/drive/folders/1fXgSU8GUUBQ2DTgglsu4rRDoV9gQVyU_). You can put them under `results/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1/run_1/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1_best_pred_psnr.pty` and `results/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1/run_1/retina_ucsf_ImageFlowNetODE_smoothness-0.100_latent-0.001_contrastive-0.010_invariance-0.000_seed_1_best_seg_dice.pty`.
+
 ## Reproduce the results
 
 ### Image registration
@@ -69,12 +84,12 @@ python train_segmentor.py
 ```
 cd src/
 # ImageFlowNet_{ODE}
-python train_2pt_all.py --model PPODEUNet --random-seed 1
-python train_2pt_all.py --model PPODEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model ImageFlowNetODE --random-seed 1
+python train_2pt_all.py --model ImageFlowNetODE --random-seed 1 --mode test --run-count 1
 
 # ImageFlowNet_{SDE}
-python train_2pt_all.py --model PPSDEUNet --random-seed 1
-python train_2pt_all.py --model PPSDEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model ImageFlowNetSDE --random-seed 1
+python train_2pt_all.py --model ImageFlowNetSDE --random-seed 1 --mode test --run-count 1
 ```
 
 ### Some common arguments.
@@ -87,29 +102,29 @@ python train_2pt_all.py --model PPSDEUNet --random-seed 1 --mode test --run-coun
 1. Flow field formulation.
 ```
 python train_2pt_all.py --model ODEUNet
-python train_2pt_all.py --model PPODEUNet
+python train_2pt_all.py --model ImageFlowNetODE
 ```
 
 2. Single-scale vs multiscale ODEs.
 ```
-python train_2pt_all.py --model PPODEUNet --ode-location 'bottleneck'
-python train_2pt_all.py --model PPODEUNet --ode-location 'all_resolutions'
-python train_2pt_all.py --model PPODEUNet --ode-location 'all_connections' # default
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'bottleneck'
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'all_resolutions'
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'all_connections' # default
 ```
 
 3. Visual feature regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-latent 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-latent 0.1
 ```
 
 4. Contrastive learning regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-contrastive 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-contrastive 0.1
 ```
 
 5. Trajectory smoothness regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-smoothness 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-smoothness 0.1
 ```
 
 ### Comparisons
@@ -200,8 +215,8 @@ conda update -n base conda
 conda install -n base conda-libmamba-solver
 conda config --set solver libmamba
 
-conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -c nvidia -c anaconda -c conda-forge
-conda activate mip
+conda create --name imageflownet pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -c nvidia -c anaconda -c conda-forge
+conda activate imageflownet
 conda install scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c anaconda -c conda-forge
 conda install read-roi -c conda-forge
 python -m pip install -U albumentations
