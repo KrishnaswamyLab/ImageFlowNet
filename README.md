@@ -68,12 +68,12 @@ python train_segmentor.py
 ```
 cd src/
 # ImageFlowNet_{ODE}
-python train_2pt_all.py --model PPODEUNet --random-seed 1
-python train_2pt_all.py --model PPODEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model ImageFlowNetODE --random-seed 1
+python train_2pt_all.py --model ImageFlowNetODE --random-seed 1 --mode test --run-count 1
 
 # ImageFlowNet_{SDE}
-python train_2pt_all.py --model PPSDEUNet --random-seed 1
-python train_2pt_all.py --model PPSDEUNet --random-seed 1 --mode test --run-count 1
+python train_2pt_all.py --model ImageFlowNetSDE --random-seed 1
+python train_2pt_all.py --model ImageFlowNetSDE --random-seed 1 --mode test --run-count 1
 ```
 
 ### Some common arguments.
@@ -86,29 +86,29 @@ python train_2pt_all.py --model PPSDEUNet --random-seed 1 --mode test --run-coun
 1. Flow field formulation.
 ```
 python train_2pt_all.py --model ODEUNet
-python train_2pt_all.py --model PPODEUNet
+python train_2pt_all.py --model ImageFlowNetODE
 ```
 
 2. Single-scale vs multiscale ODEs.
 ```
-python train_2pt_all.py --model PPODEUNet --ode-location 'bottleneck'
-python train_2pt_all.py --model PPODEUNet --ode-location 'all_resolutions'
-python train_2pt_all.py --model PPODEUNet --ode-location 'all_connections' # default
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'bottleneck'
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'all_resolutions'
+python train_2pt_all.py --model ImageFlowNetODE --ode-location 'all_connections' # default
 ```
 
 3. Visual feature regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-latent 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-latent 0.1
 ```
 
 4. Contrastive learning regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-contrastive 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-contrastive 0.1
 ```
 
 5. Trajectory smoothness regularization.
 ```
-python train_2pt_all.py --model PPODEUNet --coeff-smoothness 0.1
+python train_2pt_all.py --model ImageFlowNetODE --coeff-smoothness 0.1
 ```
 
 ### Comparisons
@@ -199,8 +199,8 @@ conda update -n base conda
 conda install -n base conda-libmamba-solver
 conda config --set solver libmamba
 
-conda create --name mip pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -c nvidia -c anaconda -c conda-forge
-conda activate mip
+conda create --name imageflownet pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -c nvidia -c anaconda -c conda-forge
+conda activate imageflownet
 conda install scikit-learn scikit-image pillow matplotlib seaborn tqdm -c pytorch -c anaconda -c conda-forge
 conda install read-roi -c conda-forge
 python -m pip install -U albumentations
