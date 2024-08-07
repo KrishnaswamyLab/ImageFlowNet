@@ -2,6 +2,7 @@
 ### Krishnaswamy Lab, Yale University
 [![Twitter](https://img.shields.io/twitter/follow/KrishnaswamyLab.svg?style=social&label=Follow)](https://twitter.com/KrishnaswamyLab)
 [![Github Stars](https://img.shields.io/github/stars/ChenLiu-1996/MedicalImageProgression.svg?style=social&label=Stars)](https://github.com/ChenLiu-1996/MedicalImageProgression/)
+[![ArXiv](https://img.shields.io/badge/ArXiv-2406.14794-firebrick)](https://arxiv.org/abs/2406.14794)
 
 This is the official implementation of [**ImageFlowNet**](https://arxiv.org/abs/2406.14794).
 
