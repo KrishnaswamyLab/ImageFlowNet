@@ -1,3 +1,6 @@
+# [Temporary] NOTE
+If you are looking for the code implementation for **DiffKillR: Killing and Recreating Diffeomorphisms for Cell Annotation in Dense Microscopy Images**, please redirect to https://github.com/KrishnaswamyLab/DiffKillR.
+
 # ImageFlowNet
 ### Krishnaswamy Lab, Yale University
 [![Twitter](https://img.shields.io/twitter/follow/KrishnaswamyLab.svg?style=social&label=Follow)](https://twitter.com/KrishnaswamyLab)
@@ -7,6 +10,7 @@
 This is the official implementation of [**ImageFlowNet**](https://arxiv.org/abs/2406.14794).
 
 Please raise issues [here](https://github.com/ChenLiu-1996/ImageFlowNet).
+
 
 ## A Glimpse into the Methods
 <img src = "assets/architecture.png" width=800>
