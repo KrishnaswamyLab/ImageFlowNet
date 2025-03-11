@@ -12,6 +12,7 @@
 
 [![ArXiv](https://img.shields.io/badge/ArXiv-ImageFlowNet-firebrick)](https://arxiv.org/abs/2406.14794)
 [![Slides](https://img.shields.io/badge/Slides-yellow)](https://chenliu-1996.github.io/slides/ImageFlowNet_slides.pdf)
+[![ICASSP](https://img.shields.io/badge/ICASSP-blue)](https://ieeexplore.ieee.org/abstract/document/10890535)
 [![Twitter](https://img.shields.io/twitter/follow/KrishnaswamyLab.svg?style=social)](https://twitter.com/KrishnaswamyLab)
 [![Github Stars](https://img.shields.io/github/stars/ChenLiu-1996/ImageFlowNet.svg?style=social&label=Stars)](https://github.com/ChenLiu-1996/ImageFlowNet/)
 
