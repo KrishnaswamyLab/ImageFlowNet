@@ -1,5 +1,5 @@
 <h1 align="center">
-[ICASSP 2025] ImageFlowNet
+[ICASSP 2025 Oral] ImageFlowNet
 </h1>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 ### Krishnaswamy Lab, Yale University
 
-This is the official implementation of [**ImageFlowNet**](https://arxiv.org/abs/2406.14794), ICASSP 2025.
+This is the official implementation of [**ImageFlowNet**](https://arxiv.org/abs/2406.14794), **ICASSP 2025 (Oral)**.
 
 Please raise issues [here](https://github.com/ChenLiu-1996/ImageFlowNet).
 
